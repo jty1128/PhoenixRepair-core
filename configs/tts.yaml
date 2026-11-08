@@ -1,8 +1,8 @@
 # Independent samples -> same-model comparison -> fresh final generation.
-model: glm-5.2
+model: kimi-k2.7-code
 instances: null
 runtime: null
-output: runs/tts
+output: runs/kimi-k2.7-code-tts
 concurrency: 4
 samples: 3
 max_steps: 200

@@ -1,8 +1,8 @@
 # One independent sample per task. Change output for sample-2/sample-3.
-model: glm-5.2
+model: kimi-k2.7-code
 instances: null  # Set a manifest path here, with --instances, or INSTANCES in .env.
 runtime: null    # Set a runtime path here, with --runtime, or PHOENIX_RUNTIME.
-output: runs/single
+output: runs/kimi-k2.7-code-single
 concurrency: 4
 max_steps: 200
 task_timeout: null  # Profile default: GLM/Qwen 7200 seconds; Kimi 3000.

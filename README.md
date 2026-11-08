@@ -1,5 +1,9 @@
 # PhoenixRepair Core
 
+当前分支 **`reproduce/kimi-k2.7-code`** 默认使用 **Kimi K2.7 Code**。支持 single/TTS；没有对应的 P0 历史设定或成绩。恢复策略及默认参数见 [恢复说明](docs/recovery.md)，历史成绩不是本次重新评分。
+
+本分支的 `our_method.sh` 会明确报错，不会悄悄换用 GLM/Qwen；Kimi 的 single/TTS 保留 thinking 开启与 reasoning 回传。
+
 ## 实验结果与每题用量
 
 数据集：SWE-bench Pro v2 HARD-51，每组 51 题。分数沿用历史评测；用量于 **2026-11-08 根据原服务器 API 账本、本机账本及原始响应重新统计**。本次没有重新运行模型或评测。
