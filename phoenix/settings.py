@@ -84,7 +84,8 @@ def model_config(model, api_base, *, p0=False):
 def load_settings(mode, config_path, overrides):
     data = yaml.safe_load(config_path.read_text()) or {}
     allowed = {"model", "instances", "output", "runtime", "api_base", "concurrency", "samples", "max_steps",
-               "task_timeout", "locations", "stage", "docker_host", "container_cpus", "container_memory"}
+               "task_timeout", "locations", "stage", "docker_host", "container_cpus", "container_memory",
+               "localization_max_steps", "localization_timeout"}
     if set(data) - allowed:
         raise ValueError("Unknown configuration fields: " + ", ".join(sorted(set(data) - allowed)))
     data.update({k: v for k, v in overrides.items() if v is not None})
@@ -102,12 +103,17 @@ def load_settings(mode, config_path, overrides):
     data.setdefault("concurrency", 4)
     data.setdefault("samples", 3)
     data.setdefault("max_steps", 200)
+    data.setdefault("localization_max_steps", 150)
     data.setdefault("stage", "all")
     data.setdefault("container_cpus", 2)
     data.setdefault("container_memory", "6g")
     data["task_timeout"] = data.get("task_timeout") or PROFILES[data["model"]]["task_timeout"]
     if not 1 <= data["max_steps"] <= 200:
         raise ValueError("max_steps must be between 1 and 200")
+    if not 1 <= data["localization_max_steps"] <= 200:
+        raise ValueError("localization_max_steps must be between 1 and 200")
+    if data.get("localization_timeout") is not None and data["localization_timeout"] <= 0:
+        raise ValueError("localization_timeout must be positive when set")
     if not isinstance(data["concurrency"], int) or data["concurrency"] < 1:
         raise ValueError("concurrency must be positive")
     if not isinstance(data["samples"], int) or data["samples"] < 2:
@@ -126,14 +132,18 @@ def load_settings(mode, config_path, overrides):
 
 
 def localization_config(settings):
+    """Match the frozen complete-strategy locations used by the scored P0 run.
+
+    Localization predates the model-specific patch profiles. Applying the patch
+    profile here changes the experiment, especially GLM's output allowance.
+    """
     data = copy.deepcopy(yaml.safe_load((ROOT / "config/locate.yaml").read_text()))
-    data["agent"]["max_steps"] = settings["max_steps"]
-    p = PROFILES[settings["model"]]
+    data["agent"]["max_steps"] = settings["localization_max_steps"]
     data["localization_runtime"] = {
-        "max_tokens": p["max_tokens"], "api_timeout": p["timeout"],
-        "tool_choice": p["tool_choice"], "enable_thinking": False, "num_retries": 0,
-        "task_timeout": settings["task_timeout"], "action_repeat_limit": 0,
-        "max_input_tokens": 131072, "context_compaction_threshold": 120000,
-        "context_compaction_target": 110000, "preserve_thinking": False,
+        "max_tokens": 32768, "api_timeout": 600,
+        "tool_choice": "auto", "enable_thinking": False,
+        "task_timeout": settings.get("localization_timeout"), "action_repeat_limit": 10,
+        "max_compacted_tokens": 110000, "context_compaction_threshold": 100000,
+        "context_compaction_target": 90000, "preserve_thinking": False,
     }
     return data

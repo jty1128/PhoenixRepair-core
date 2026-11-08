@@ -26,6 +26,8 @@ def main(argv=None):
     parser.add_argument("--samples", type=int, help="Independent TTS samples, default 3")
     parser.add_argument("--max-steps", type=int)
     parser.add_argument("--task-timeout", type=int)
+    parser.add_argument("--localization-max-steps", type=int, help="Localization cap, historical default 150; patch budget is separate")
+    parser.add_argument("--localization-timeout", type=int, help="Optional localization wall-time cap; historical run used a step cap")
     parser.add_argument("--docker-host")
     parser.add_argument("--locations", type=Path, help="Reuse same-model locations with verified task identity")
     parser.add_argument("--stage", choices=("all", "localization", "patch"))
@@ -37,7 +39,8 @@ def main(argv=None):
     try:
         settings = load_settings(args.method, args.config or ROOT / "configs" / (args.method + ".yaml"), {
             k: getattr(args, k) for k in ("model", "instances", "output", "runtime", "api_base", "concurrency", "samples",
-                                         "max_steps", "task_timeout", "docker_host", "locations", "stage")})
+                                         "max_steps", "task_timeout", "localization_max_steps", "localization_timeout",
+                                         "docker_host", "locations", "stage")})
         if not settings.get("instances"):
             raise ValueError("Set --instances /path/to/tasks.jsonl or INSTANCES in .env")
         if args.limit < 0:

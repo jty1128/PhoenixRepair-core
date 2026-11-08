@@ -8,13 +8,15 @@ import uuid
 
 import pytest
 
-from phoenix.settings import write_json
-from phoenix import worker
+from phoenix.settings import write_json, localization_config
+from phoenix import worker, localization
+from phoenix.pipeline import load_location
 
 
 @pytest.mark.skipif(not (os.environ.get("PHOENIX_SMOKE_BASE_IMAGE") and os.environ.get("PHOENIX_SMOKE_RUNTIME")),
                     reason="Set PHOENIX_SMOKE_BASE_IMAGE (cached image with bash/git) and PHOENIX_SMOKE_RUNTIME")
-def test_real_container_edit_and_p0_submission(tmp_path, monkeypatch, task, candidate, settings):
+@pytest.mark.parametrize("model", ["glm-5.2", "qwen3.7-plus"])
+def test_real_container_edit_and_p0_submission(tmp_path, monkeypatch, task, candidate, settings, model):
     """Build a disposable toy checkout, edit it, submit P0, then remove our image."""
     image = "phoenixrepair-core-smoke:" + uuid.uuid4().hex
     run_id = "smoke-" + uuid.uuid4().hex
@@ -36,7 +38,30 @@ def test_real_container_edit_and_p0_submission(tmp_path, monkeypatch, task, cand
         commit = docker("run", "--rm", "--network=none", "--entrypoint=git", image,
                         "-C", "/fixture", "rev-parse", "HEAD").stdout.strip()
         task.update(base_commit=commit, image_name=image)
-        settings.update(runtime=runtime, method="our_method")
+        settings.update(runtime=runtime, method="our_method", model=model)
+        source = localization.export_source(tmp_path / "source-cache", task)
+        candidate["hypothesis_id"] = "H1"
+        location_actions = iter([
+            ("location_read", {"request": dict(operation="read", path="app.py")}),
+            ("location_checkpoint", {"request": dict(notes="Read the constant and its requirement.",
+                requirements=candidate["requirements"], hypotheses=[dict(id="H1", idea=candidate["hypothesis"],
+                grounding=["The fixture contains only one constant."])], active_hypothesis="H1",
+                single_hypothesis_reason="The issue explicitly specifies the value to change.")}),
+            ("location_candidate", {"request": dict(candidate=candidate)}),
+            ("analysis_complete", {}),
+        ])
+        def offline_localization(session, endpoint, key, payload, folder, **kwargs):
+            assert payload["model"] == model
+            name, arguments = next(location_actions)
+            return dict(choices=[dict(message=dict(role="assistant", content="", tool_calls=[dict(
+                id="call_" + name, type="function", function=dict(name=name, arguments=json.dumps(arguments)))]))])
+        monkeypatch.setattr(localization, "call_api", offline_localization)
+        location_root = tmp_path / "localization"
+        write_json(location_root / "instances.json", [task])
+        located = localization.run_task(task, source, location_root, {"model": model, "account": "fixture"},
+                                        "synthetic-unused-key", localization_config(settings), settings["api_base"])
+        assert located["status"] == "localized", located
+        candidate = load_location(location_root, task, model)["candidates"][0]
         actions = []
         for name, arguments in [
             ("str_replace_editor", dict(command="str_replace", path="/fixture/app.py", old_str="value = 1", new_str="value = 2")),
@@ -70,6 +95,7 @@ def test_real_container_edit_and_p0_submission(tmp_path, monkeypatch, task, cand
         assert budget["attempted_calls"] == 3
         provenance = json.loads((stage / "history_isolation.json").read_text())
         assert provenance["snapshot_commit"] != commit
+        assert (source / "repo/app.py").read_text() == "value = 1\n"
     finally:
         owned = docker("ps", "-aq", "--filter", "label=phoenixrepair.run=" + run_id, check=False).stdout.split()
         if owned:

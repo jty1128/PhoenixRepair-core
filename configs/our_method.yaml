@@ -6,6 +6,8 @@ runtime: null
 output: runs/our-method-p0
 concurrency: 4
 max_steps: 200
+localization_max_steps: 150
+localization_timeout: null
 task_timeout: 7200
 api_base: null
 stage: all

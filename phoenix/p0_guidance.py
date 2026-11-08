@@ -1,5 +1,11 @@
 """Author instructions used before the original P0 submission."""
 
+SUMMARY_GUIDANCE = (
+    '\nCandidate patches are proposals, not correctness proofs. Independent review follows final generation. '
+    'Compare actual diffs and observed checks against the original issue. Preserve uncertainty and '
+    'identify missing requirements; do not recommend blindly merging incompatible mechanisms.'
+)
+
 IMPLEMENTATION_GUIDANCE = """
 The localization/summary is an UNVERIFIED proposal. It can omit cooperating edits,
 misread a requirement, contain contradictions, or describe an incorrect API.

@@ -14,6 +14,8 @@
 
 **本仓库的 `bash our_method.sh` 对应上表的审查前 P0。** 生成指导在 P0 提交前已生效，提交后不执行额外审核或修订。TTS Final 的 `≥` 保留原统计口径，表示 Token 消耗下界。
 
+P0 的历史评分使用已冻结的完整策略定位：GLM 的 45 题为单候选、6 题为多候选；Qwen 的 51 题均为单候选。入口默认包含“重新定位 → 生成 P0”两个阶段，也支持 `--locations` 复用同模型定位。重新生成定位与补丁不保证得到完全相同的历史分数。
+
 ## 方法入口
 
 包含三种方法的核心代码、配置、运行说明与上述汇总结果。基于 SWE-agent / SWE-ReX；不包含实验轨迹、历史补丁、数据集、逐题评测日志、API 密钥或机器专用配置。
@@ -108,14 +110,16 @@ bash our_method.sh --stage patch --locations runs/qwen-location/localization \
 - 使用完整策略定位流程；每个候选应形成完整方案，并与原始需求对应。
 - 生成时把定位视为待验证的建议，以原始 issue 为准；检查调用方、关联行为、边界情况和实际 diff。
 - 保留当时 P0 生成前的 author prompt 和预算提醒。原提示中的审核安排保留以匹配生成条件，但本入口在首次提交后结束，**不调用审核模型，不修订，不选择 P1**。
-- 单候选的原始 200-call 配额中，P0 author 最多使用 160 次，原预留的 40 次不会被执行。多候选时，候选共享前半预算，summary 使用一次调用，final 可使用上游节省的额度，同时保留原 40 次预留。定位另有最多 200 步。
+- 单候选的原始 200-call 配额中，P0 author 最多使用 160 次，原预留的 40 次不会被执行。多候选时，候选共享前半预算，summary 使用一次调用，final 可使用上游节省的额度，同时保留原 40 次预留。定位单独使用历史设定的 150 步；`--localization-max-steps` 可显式调整，最多 200 步，调整后属于不同的实验设定。
 - 提交阶段只执行确定性的补丁校验；如仅混入测试文件修改，保留原稿并排除测试 hunks，不改变生产代码 hunks，不产生额外模型请求。
 
 也可通过 `--locations` 复用自己已有的同模型定位。目录必须含 `instances.json`，以及 `<model>/<instance_id>/location_candidates.json` 和 `report.json`；会检查题目、base commit、模型及候选完整性。仓库不携带历史定位数据，因此重新生成不保证复现某次历史运行的具体分数。
 
 ## 模型设定
 
-| 生成参数 | GLM-5.2 | Qwen-3.7 Plus | Kimi K2.7 Code |
+定位和 patch 生成使用各自的历史配置，不能把 patch 参数直接套到定位阶段。完整策略定位在 GLM/Qwen 上均为：thinking 关闭、temperature=0、top_p=1、输出上限 32,768、请求超时 600 秒、tool_choice=auto（到检查点时强制 checkpoint）、最多 150 步。上下文达到 100,000 后压至目标 90,000，压缩后仍超过 110,000 则停止；保留首尾各 5 轮工具输出。连续 10 次相同动作会停止，HTTP 传输最多尝试 5 次。历史定位无独立总时限，公开入口可通过 `--localization-timeout` 显式增加。
+
+| Patch 生成参数 | GLM-5.2 | Qwen-3.7 Plus | Kimi K2.7 Code |
 | --- | --- | --- | --- |
 | 模型 ID | `glm-5.2` | `qwen3.7-plus` | `kimi-k2.7-code` |
 | Thinking | 关闭 | 关闭 | 开启并回传 reasoning |
@@ -128,7 +132,9 @@ bash our_method.sh --stage patch --locations runs/qwen-location/localization \
 
 输入上限为 131,072；上下文达到 120,000 时压缩至目标 110,000，保留首尾各 5 轮。API 内层 `num_retries=0`；single/TTS 沿用框架最多 20 次尝试，P0 author 每次 query 只尝试一次。不要把两层重试设置混为一谈。
 
-Summary 使用同一个模型，temperature=0.7、top_p=1。GLM/Qwen summary 输出上限为 8,192；Kimi 为 32,768。GLM/Qwen summary 请求超时为 120 秒、最多 5 次传输尝试；Kimi 为 240 秒、最多 3 次，并拒绝截断的 summary。P0 多候选 summary 受共享预算限制，只允许一次尝试。
+TTS summary 使用同一个模型，temperature=0.7、top_p=1。GLM/Qwen 输出上限为 8,192；Kimi 为 32,768。GLM/Qwen 请求超时为 120 秒、最多 5 次传输尝试；Kimi 为 240 秒、最多 3 次，并拒绝截断的 summary。
+
+P0 多候选 summary 使用历史 P0 专用设置：同模型、temperature=0、top_p=1；GLM 输出上限 8,192、读取超时 240 秒，Qwen 为 32,768、600 秒，连接超时均为 30 秒。受共享预算限制只调用一次，读取完整候选 diff，并追加“对照原始 issue、保留不确定性、避免合并不兼容方案”的原始提示。历史流程将非空 summary 交给 final，不使用 TTS 的额外格式门槛；单候选不经过 summary。
 
 GLM/Qwen 支持三个入口；Kimi 支持 single/TTS。模型支持情况取决于你的服务商账号，不会用另一模型自动替代。
 
@@ -148,6 +154,8 @@ GLM/Qwen 支持三个入口；Kimi 支持 single/TTS。模型支持情况取决�
 python -m pytest -q
 ```
 
-默认测试不访问模型 API。可另设 `PHOENIX_SMOKE_BASE_IMAGE`（本地已有、含 Git/Bash 的镜像）和 `PHOENIX_SMOKE_RUNTIME` 后运行 `python -m pytest tests/test_docker.py -q`，验证真实容器中的编辑、历史隔离和 P0 提交；该测试使用合成代码与固定动作回放，不调用模型。
+默认测试不访问模型 API。可另设 `PHOENIX_SMOKE_BASE_IMAGE`（本地已有、含 Git/Bash 的镜像）和 `PHOENIX_SMOKE_RUNTIME` 后运行 `python -m pytest tests/test_docker.py -q`，分别验证 GLM/Qwen 配置下的源码导出、完整定位、真实容器编辑、历史隔离和 P0 提交；该测试使用合成代码与固定动作回放，不调用模型。
+
+历史方法核对覆盖 102 份冻结定位、115 个生成阶段的指导文本与 agent 配置，以及 6 个多候选 summary 请求。生成配置仅规范化了工具安装路径与密钥环境变量名，其他字段一致；6 个 summary 请求可从原候选逐字段重建。历史评分的 102 份输入补丁也与对应 P0 文件一致。这些检查验证流程和配置的对应关系，不构成对重新生成结果的评分。
 
 核心 agent 来自 SWE-agent 1.1.0 的项目内改版；保留原 MIT LICENSE。TTS 提示词与原始实验的 sample/summary/final 逻辑一致。完整策略定位和 P0 author guidance 从对应方法快照提取；不包含按任务 ID 分支的修复规则、参考补丁或评测答案。公开版本将服务器专用路径和控制器替换为可配置入口。

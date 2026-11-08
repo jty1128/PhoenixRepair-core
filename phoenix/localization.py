@@ -176,7 +176,7 @@ def run_task(instance, source, output, profile, key, config, endpoint):
     transcript = task / 'trajectory.jsonl'
     limit = config['agent']['max_steps']
     runtime = config['localization_runtime']
-    deadline = time.monotonic() + runtime['task_timeout']
+    deadline = time.monotonic() + runtime['task_timeout'] if runtime['task_timeout'] else None
     session = requests.Session()
     # No environment proxy/credential fallback to unrelated services.
     session.trust_env = False
@@ -189,7 +189,7 @@ def run_task(instance, source, output, profile, key, config, endpoint):
         def tokens(ms):
             return sum(len(encoder.encode(json.dumps(m, ensure_ascii=False), disallowed_special=())) + 6 for m in ms)
         for step in range(1, limit + 1):
-            if time.monotonic() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 raise RuntimeError('Localization wall-time limit reached; drafts retained')
             control = controller.control(step, limit)
             write(artifacts / 'location_control.json', control)
@@ -205,7 +205,7 @@ def run_task(instance, source, output, profile, key, config, endpoint):
                     request_messages, rejected_ids, tokens, target_tokens=runtime['context_compaction_target'])
                 write(task / 'compaction.json', {'step': step, 'tokens': count, 'outputs_summarized': compacted,
                                                'rejected_exchanges_omitted': rejected})
-                if count > runtime['max_input_tokens']:
+                if count > runtime['max_compacted_tokens']:
                     raise RuntimeError('Context budget exceeded after preserving actions/requirements; drafts retained')
             choice = ({'type': 'function', 'function': {'name': 'location_checkpoint'}}
                       if control['checkpoint_required'] else runtime['tool_choice'])
