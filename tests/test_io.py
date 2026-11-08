@@ -34,12 +34,14 @@ def test_shell_dry_run_without_credentials_or_docker(tmp_path, task, script):
     ("our_method", "glm-5.2", 0, 8192, (30, 240)),
     ("our_method", "qwen3.7-plus", 0, 32768, (30, 600)),
     ("tts", "glm-5.2", 0.7, 8192, 120),
+    ("tts", "kimi-k2.7-code", 0.7, 32768, 240),
 ])
 def test_summary_profile_format_and_shared_budget(monkeypatch, tmp_path, task, settings, bad_response,
                                                  mode, model, temperature, output_limit, timeout):
     settings.update(method=mode, model=model)
     calls = []
-    answer = "**BEST_SAMPLE:** 1\n**REASONING:** Correct constant.\n**INSIGHTS FOR NEXT ATTEMPT:** Update value."
+    answer = ("**BEST_SAMPLE:** 1\n**REASONING:** The constant matches the requested behavior and preserves callers.\n"
+              "**INSIGHTS FOR NEXT ATTEMPT:** Update the value and verify the affected edge cases.")
 
     class Session:
         def post(self, url, **kwargs):
@@ -66,7 +68,8 @@ def test_summary_profile_format_and_shared_budget(monkeypatch, tmp_path, task, s
             summary.summarize(**kwargs)
     else:
         assert summary.summarize(**kwargs) == answer
-    assert len(calls) == (5 if bad_response and mode == "tts" else 1)
+    expected_attempts = (3 if model == "kimi-k2.7-code" else 15) if mode == "tts" else 1
+    assert len(calls) == (expected_attempts if bad_response else 1)
     assert calls[0]["json"]["model"] == settings["model"]
     assert calls[0]["json"]["temperature"] == temperature
     assert calls[0]["json"]["max_tokens"] == output_limit

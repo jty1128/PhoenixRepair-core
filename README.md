@@ -14,6 +14,8 @@
 
 **本仓库的 `bash our_method.sh` 对应上表的审查前 P0。** 生成指导在 P0 提交前已生效，提交后不执行额外审核或修订。TTS Final 的 `≥` 保留原统计口径，表示 Token 消耗下界。
 
+**`bash run_tts.sh` 对应上表的 TTS Final 方法**：默认三个独立 sample → 同模型比较并生成 summary → 从原始 base checkout 重新生成 final patch。`BEST_SAMPLE` 是总结中的建议，最终输出来自新的 final 生成；整个 TTS 流程不使用完整策略定位或 P0 的额外生成指导。提示词与模型参数已逐项对照历史记录，运行层保留的差异见文末。
+
 P0 的历史评分使用已冻结的完整策略定位：GLM 的 45 题为单候选、6 题为多候选；Qwen 的 51 题均为单候选。入口默认包含“重新定位 → 生成 P0”两个阶段，也支持 `--locations` 复用同模型定位。重新生成定位与补丁不保证得到完全相同的历史分数。
 
 ## 方法入口
@@ -132,7 +134,7 @@ bash our_method.sh --stage patch --locations runs/qwen-location/localization \
 
 输入上限为 131,072；上下文达到 120,000 时压缩至目标 110,000，保留首尾各 5 轮。API 内层 `num_retries=0`；single/TTS 沿用框架最多 20 次尝试，P0 author 每次 query 只尝试一次。不要把两层重试设置混为一谈。
 
-TTS summary 使用同一个模型，temperature=0.7、top_p=1。GLM/Qwen 输出上限为 8,192；Kimi 为 32,768。GLM/Qwen 请求超时为 120 秒、最多 5 次传输尝试；Kimi 为 240 秒、最多 3 次，并拒绝截断的 summary。
+TTS summary 使用同一个模型，temperature=0.7、top_p=1。GLM/Qwen 输出上限为 8,192、请求超时为 120 秒；每轮最多 5 次传输尝试，格式不合格或传输耗尽后最多进行 3 轮，总上限为 15 次请求。GLM/Qwen 沿用历史格式校验：接受普通或加粗标题，以及带方括号的样本序号；必须包含 `BEST_SAMPLE`、`REASONING:`、`INSIGHTS FOR NEXT ATTEMPT:`，且总结至少 100 字符。Kimi 输出上限为 32,768、超时为 240 秒；每轮最多 3 次传输尝试，耗尽即停止；格式不合格最多 3 轮，并拒绝截断的 summary。
 
 P0 多候选 summary 使用历史 P0 专用设置：同模型、temperature=0、top_p=1；GLM 输出上限 8,192、读取超时 240 秒，Qwen 为 32,768、600 秒，连接超时均为 30 秒。受共享预算限制只调用一次，读取完整候选 diff，并追加“对照原始 issue、保留不确定性、避免合并不兼容方案”的原始提示。历史流程将非空 summary 交给 final，不使用 TTS 的额外格式门槛；单候选不经过 summary。
 
@@ -156,6 +158,10 @@ python -m pytest -q
 
 默认测试不访问模型 API。可另设 `PHOENIX_SMOKE_BASE_IMAGE`（本地已有、含 Git/Bash 的镜像）和 `PHOENIX_SMOKE_RUNTIME` 后运行 `python -m pytest tests/test_docker.py -q`，分别验证 GLM/Qwen 配置下的源码导出、完整定位、真实容器编辑、历史隔离和 P0 提交；该测试使用合成代码与固定动作回放，不调用模型。
 
-历史方法核对覆盖 102 份冻结定位、115 个生成阶段的指导文本与 agent 配置，以及 6 个多候选 summary 请求。生成配置仅规范化了工具安装路径与密钥环境变量名，其他字段一致；6 个 summary 请求可从原候选逐字段重建。历史评分的 102 份输入补丁也与对应 P0 文件一致。这些检查验证流程和配置的对应关系，不构成对重新生成结果的评分。
+P0 历史方法核对覆盖 102 份冻结定位、115 个生成阶段的指导文本与 agent 配置，以及 6 个多候选 summary 请求。生成配置仅规范化了工具安装路径与密钥环境变量名，其他字段一致；6 个 summary 请求可从原候选逐字段重建。历史评分的 102 份输入补丁也与对应 P0 文件一致。
+
+TTS 历史方法核对覆盖 GLM/Qwen 共 408 个生成阶段（三个 sample 与 final，各 51 题）、102 份 summary 提示与请求参数，以及 306 份冻结 sample 补丁的哈希。实际渲染的 sample/final 提示词和 summary 请求均一致；102 份历史 summary 均通过对齐后的格式校验。离线流程测试覆盖三个 sample 独立生成、同模型总结、全新 final 输出和有界重试。
+
+TTS 的运行实现仍有明确差异：公开版保留了提交工具的超时保护（`submit` 从普通命令的 30 秒改为 600 秒）、有时限的原子补丁收集和 binary diff 输出，以及交互命令拦截列表的路径修正。配置还显式加入了三个关闭状态的字段：完整策略定位、thinking 保留和请求间隔控制，均不在 GLM/Qwen TTS 中启用。因此这里对齐的是核心方法、提示词和模型参数，并非历史服务器环境的逐字复制；这些检查没有调用付费模型或重新评分，也不保证重新生成能精确复现表中分数。
 
 核心 agent 来自 SWE-agent 1.1.0 的项目内改版；保留原 MIT LICENSE。TTS 提示词与原始实验的 sample/summary/final 逻辑一致。完整策略定位和 P0 author guidance 从对应方法快照提取；不包含按任务 ID 分支的修复规则、参考补丁或评测答案。公开版本将服务器专用路径和控制器替换为可配置入口。

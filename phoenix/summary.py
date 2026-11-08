@@ -43,6 +43,18 @@ def patch_for_prompt(path, limit=180_000):
     return preview, dict(original_chars=len(original), prompt_chars=len(preview), compacted=True)
 
 
+def validate_tts_summary(text, num_samples=3):
+    """Historical TTS gate, accepting plain/bold headings and bracketed indices."""
+    normalized = text.replace('**', '').replace('__', '')
+    match = re.search(r'(?im)^\s*BEST_SAMPLE\s*:\s*\[?(\d+)\]?(?:\s|$)', normalized)
+    if (not match or match.group(1) not in {str(i) for i in range(1, num_samples + 1)} or
+            'REASONING:' not in normalized or 'INSIGHTS FOR NEXT ATTEMPT:' not in normalized):
+        raise ValueError('Summary is missing required sections or a valid sample index')
+    if len(text.strip()) < 100:
+        raise ValueError('Summary is unexpectedly short')
+    return int(match.group(1))
+
+
 def summarize(task, candidates, settings, directory, key, *, shared_budget=False):
     directory.mkdir(parents=True, exist_ok=True)
     p0 = settings["method"] == "our_method"
@@ -80,7 +92,7 @@ def summarize(task, candidates, settings, directory, key, *, shared_budget=False
     session = requests.Session()
     session.trust_env = False
     try:
-        for _ in range(format_limit):
+        for format_attempt in range(format_limit):
             response = None
             for retry in range(transport_limit):
                 attempts += 1
@@ -95,21 +107,38 @@ def summarize(task, candidates, settings, directory, key, *, shared_budget=False
                     write_json(directory / f"response-{attempts}.json", response)
                     for k in usage:
                         usage[k] += response.get("usage", {}).get(k, 0) or 0
+                    choice = response["choices"][0]
+                    answer = choice["message"].get("content") or ""
+                    if not isinstance(answer, str):
+                        raise ValueError("Summary content must be text")
                     break
-                except (requests.RequestException, ValueError, RuntimeError) as exc:
+                except (requests.RequestException, ValueError, RuntimeError, KeyError, IndexError, TypeError, AttributeError) as exc:
                     write_json(directory / f"transport-error-{attempts}.json", {"error_type": type(exc).__name__, "attempt": attempts})
                     if retry + 1 == transport_limit:
-                        raise RuntimeError("Summary request failed after bounded attempts; see stage artifacts") from None
+                        if p0 or kimi or format_attempt + 1 == format_limit:
+                            raise RuntimeError("Summary request failed after bounded attempts; see stage artifacts") from None
+                        # The historical GLM/Qwen comparator returned empty
+                        # text after its five transport attempts. The adapter
+                        # then proceeded to its next of three bounded rounds.
+                        response = None
+                        break
                     time.sleep(2)
-            choice = response["choices"][0]
-            answer = choice["message"].get("content") or ""
-            match = re.search(r"\*\*BEST_SAMPLE:\*\*\s*(\d+)", answer)
-            valid = (match and 1 <= int(match[1]) <= len(inputs) and "**REASONING:**" in answer
-                     and "**INSIGHTS FOR NEXT ATTEMPT:**" in answer)
+            if response is None:
+                continue
             if p0:
                 # The scored P0 run passed any nonempty same-model summary to
                 # its final author; TTS's separate format gate was not used.
                 valid = bool(answer.strip())
+            elif kimi:
+                match = re.search(r"\*\*BEST_SAMPLE:\*\*\s*(\d+)", answer)
+                valid = (match and 1 <= int(match[1]) <= len(inputs) and "**REASONING:**" in answer
+                         and "**INSIGHTS FOR NEXT ATTEMPT:**" in answer)
+            else:
+                try:
+                    validate_tts_summary(answer, len(inputs))
+                    valid = True
+                except ValueError:
+                    valid = False
             if kimi and choice.get("finish_reason") == "length":
                 valid = False
             if valid:

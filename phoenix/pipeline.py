@@ -53,6 +53,10 @@ class DockerBackend:
         self.port_lock, self.ports = threading.Lock(), set()
         self.env = dict(os.environ, PHOENIX_API_KEY=key, LITELLM_LOCAL_MODEL_COST_MAP="True",
                         PHOENIX_API_USAGE_DB=str(self.output / "api-usage.sqlite3"))
+        # P0's shared request pacing needs an account identifier. A standalone
+        # checkout has no server-specific account map; use a stable opaque ID.
+        self.env["PHOENIX_ACCOUNT_ID"] = os.environ.get("PHOENIX_ACCOUNT_ID") or (
+            "env-" + hashlib.sha256(key.encode()).hexdigest()[:16])
         if settings.get("docker_host"):
             self.env["DOCKER_HOST"] = settings["docker_host"]
 
