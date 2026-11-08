@@ -32,6 +32,23 @@
 
 **本仓库的 `bash our_method.sh` 对应上表的审查前 P0。** 费用已包含复用定位的原始消耗，以及候选生成、必要的 summary 和首次提交前的 final author；不包含 P1 审查、修复及复查。P0 的生成指导仍属于提交前流程。
 
+### Kimi K2.7 Code（Thinking）
+
+| 实验 | 分数 | 输入 / task | 其中缓存 / task | 输出 / task | 合计 / task | 估算 USD / task |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Sample 1 | 26/51（50.98%） | 5.837M | 5.503M | 43.808K | 5.881M | $1.5648 |
+| Sample 2 | 36/51（70.59%） | 5.429M | 5.092M | 45.592K | 5.474M | $1.4947 |
+| Sample 3 | 32/51（62.75%） | 5.473M | 5.151M | 42.895K | 5.516M | $1.4816 |
+| TTS Final | 34/51（66.67%） | 22.752M | 21.365M | 192.934K | 22.945M | $6.2538 |
+
+**TTS Final 采用 2026-11-08 补跑后的结果：34/51（66.67%）。** 对原始 final 中 8 道生成异常且未通过的题，复用已经校验的原始 `summary.txt`，从 base commit 重新生成并评测；本轮新增通过 2 题。补跑每题生成上限为 7,200 秒，原始轨迹沿用 3,000 秒；最多 200 步，模型 thinking 与 reasoning 回传保持开启。生成并发由 8 调整为 4（已有任务自然结束）。这是包含追加预算的结果，不能当作统一单次预算的 pass@1。
+
+**TTS 用量包含 Sample 1＋Sample 2＋Sample 3＋51 次成功 summary＋原始 51 题 final＋本轮全部 8 题补跑**，没有扣除被替换的原始失败尝试，也没有重复计算复用 summary。全流程已知用量为 **1,170,188,294 tokens**，其中输入 **1,160,348,684**（含缓存命中 **1,089,614,156**）、输出 **9,839,610**；公开价估算 **¥2,142.29（$318.94）**。本轮 8 题补跑单独增加 **55,677,505 tokens / ¥107.71**。其中 424 次响应记录显式缓存，创建 457,066 tokens、命中 610,380 tokens；创建量和命中量都已包含在输入中，未额外累加为 Token 消耗。费用按显式创建、显式命中及其余隐式缓存分项计算。这些是对应保留实验的用量，不是整台服务器的所有历史消耗。
+
+所有 **19,304 条有 usage 的响应**均完成账本匹配；另有 **2,634 条请求未返回 usage**，包括超时、限流、鉴权错误、其他错误及 pending，未知消耗不当作零。输出采用 API `completion_tokens`，已包含返回的 reasoning 消耗，不再额外相加。表格各行共享 sample 阶段，不能跨行相加。
+
+分项、请求覆盖率和来源指纹：[Kimi CSV](results/kimi_hard51_usage_audit.csv) · [Kimi JSON](results/kimi_hard51_usage_audit.json)。原始 final 与补跑的分项在 JSON 中保留。未计入另一个独立的 `final-sample-2h-20261107` 实验，也未计入废弃 worker、服务器和评测算力费用。
+
 ### 计费依据
 
 价格核对日期为 2026-11-08，单位为人民币元 / 百万 Token：
@@ -40,8 +57,9 @@
 | --- | ---: | ---: | ---: | --- |
 | GLM-5.2 | ¥8 | ¥2 | ¥28 | 北京地域，不分输入阶梯 |
 | Qwen-3.7 Plus | ¥2 | ¥0.4 | ¥8 | 北京地域，单次输入 ≤256K |
+| Kimi K2.7 Code | ¥6.5 | 隐式 ¥1.3 / 显式 ¥0.65 | ¥27 | 北京地域；显式缓存创建 ¥8.125 |
 
-来源：[百炼 GLM-5.2 定价](https://help.aliyun.com/zh/model-studio/glm-5-2)、[百炼 Qwen-3.7 Plus 定价](https://help.aliyun.com/zh/model-studio/qwen3-7-plus)。Qwen 的每条计费请求均检查为 ≤256K；采用普通按量调用的隐式缓存价格，不套用 Batch 或显式缓存价格。
+来源：[百炼 GLM-5.2 定价](https://help.aliyun.com/zh/model-studio/glm-5-2)、[百炼 Qwen-3.7 Plus 定价](https://help.aliyun.com/zh/model-studio/qwen3-7-plus)。Kimi 来源：[百炼 Kimi K2.7 Code 定价](https://help.aliyun.com/zh/model-studio/kimi-k2-7-code)。Qwen 的每条计费请求均检查为 ≤256K；GLM/Qwen 沿用原审计中的隐式缓存估算。Kimi 根据原始响应中的 `cache_type=ephemeral`、`cache_creation_input_tokens` 区分显式缓存，其余仅返回 `cached_tokens` 的响应按隐式缓存估算；summary 不带缓存标记，按隐式缓存计价。[显式/隐式缓存计费规则](https://help.aliyun.com/zh/model-studio/context-cache)。所有模型均不套用 Batch 价格。
 
 美元使用固定参考汇率 **1 USD＝6.7168 CNY**，来自 [中国外汇交易中心 2026-11-06 人民币汇率中间价](https://www.chinamoney.com.cn/chinese/bkccpr/)。这是人民币费用的统一换算，不是国际站美元定价，也不是各历史交易日的实际结算汇率。
 
@@ -49,26 +67,28 @@
 I = 输入 Token（包含缓存）
 C = 缓存命中输入 Token
 O = 输出 Token（API completion_tokens，包含工具调用参数）
-人民币费用 = ((I - C) × 非缓存输入价 + C × 缓存价 + O × 输出价) / 1,000,000
+普通隐式缓存人民币费用 = ((I - C) × 非缓存输入价 + C × 缓存价 + O × 输出价) / 1,000,000
+Kimi 混合缓存：W=显式创建，Ce=显式命中，Ci=隐式命中，C=Ce+Ci
+Kimi 人民币费用 = ((I - C - W) × 6.5 + W × 8.125 + Ce × 0.65 + Ci × 1.3 + O × 27) / 1,000,000
 每题美元费用 = 人民币费用 / 6.7168 / 51
 ```
 
 ### 统计范围与完整性
 
 - **Sample 1/2/3**：各自对应的 51 条保留轨迹，包含这些进程内有 usage 的重试；Qwen Sample 1 复用的 6 题计入原始生成用量。
-- **TTS Final**：三个 sample＋summary＋final 全流程；两个模型各 51 个 summary 已从原账本补齐，不再使用旧表的 `≥`。
+- **TTS Final**：三个 sample＋summary＋final 全流程；GLM/Qwen 各 51 个 summary 已从原账本补齐，不再使用旧表的 `≥`。Kimi 还包含上述 8 题追加补跑，51 个 summary 的 79 次请求中有 51 次成功，其余 28 次没有 usage。
 - **P0**：两个模型各 51 题均匹配；通过冻结检查点找回 GLM 6 个、Qwen 5 个恢复前的生成进程。按首次提交的调用边界截断，先截断请求序列再处理错误请求，避免把后续修复请求移入 P0。定位响应与保存的用量汇总逐题一致。
 - **旧计数已更正**：旧 `model_stats` 使用框架计数，可能漏掉工具调用输出及重试，与 API usage 口径不同。JSON/CSV 保留旧值供追溯；正文表格采用 API 返回值，不能混用两个版本。
 - **费用是公开价估算，不是实付账单**：所有保留任务及成功响应均已匹配。错误、超时或仍标记 pending 的请求若没有返回 usage，单独保留计数，不臆造 Token 或断言收费为零。未返回 usage 的请求不纳入上述费用，详见下表和 JSON。
-- 表中不包含废弃实验、历史被替换的整轮重跑、Docker/服务器费用；TTS 和 P0 包含复用阶段的成本，跨行相加会重复计算共享阶段。
+- 表中不包含废弃实验、历史被替换的整轮重跑、Docker/服务器费用；Kimi 明确包含上述 8 题补跑及其原始 final 尝试。TTS 和 P0 包含复用阶段的成本，跨行相加会重复计算共享阶段。
 
-| 实验 | GLM：有 usage 的请求 / 已匹配请求 | Qwen：有 usage 的请求 / 已匹配请求 |
-| --- | ---: | ---: |
-| Sample 1 | 6,027 / 6,029 | 4,617 / 4,766 |
-| Sample 2 | 6,074 / 6,076 | 4,479 / 4,481 |
-| Sample 3 | 5,861 / 5,865 | 4,710 / 4,712 |
-| TTS Final | 22,916 / 22,925 | 17,981 / 18,134 |
-| P0 | 5,816 / 5,821 | 5,361 / 5,363 |
+| 实验 | GLM：有 usage 的请求 / 已匹配请求 | Qwen：有 usage 的请求 / 已匹配请求 | Kimi：有 usage 的请求 / 已匹配请求 |
+| --- | ---: | ---: | ---: |
+| Sample 1 | 6,027 / 6,029 | 4,617 / 4,766 | 4,943 / 5,153 |
+| Sample 2 | 6,074 / 6,076 | 4,479 / 4,481 | 4,649 / 5,365 |
+| Sample 3 | 5,861 / 5,865 | 4,710 / 4,712 | 4,543 / 5,267 |
+| TTS Final | 22,916 / 22,925 | 17,981 / 18,134 | 19,304 / 21,938 |
+| P0 | 5,816 / 5,821 | 5,361 / 5,363 | — |
 
 完整精度数据：[CSV](results/hard51_usage_audit.csv) · [JSON（分项、覆盖率、价格及来源指纹）](results/hard51_usage_audit.json)。公开文件仅含聚合数字，不包含账本原件、账户标识、任务轨迹、补丁、提示词或凭据。
 
@@ -80,6 +100,15 @@ python scripts/recount_hard51_usage.py \
   --remote-ledger /path/to/remote-ledger-snapshot.sqlite3 \
   --remote-metadata /path/to/remote-run-metadata.json \
   --output results/hard51_usage_audit.json
+```
+
+Kimi 重算脚本：[scripts/recount_kimi_hard51_usage.py](scripts/recount_kimi_hard51_usage.py)。读取私有运行目录和只读账本快照，结合请求起止时间、输入/输出/缓存计数及唯一响应确认 worker，再核对全部保留响应；不上传任务或账户信息。
+
+```bash
+python scripts/recount_kimi_hard51_usage.py \
+  --root /path/to/private/TSE-Revision \
+  --ledger /path/to/usage.sqlite3 \
+  --output results/kimi_hard51_usage_audit.json
 ```
 
 ## 方法入口
@@ -187,6 +216,8 @@ bash our_method.sh --model glm-5.2 --output runs/glm-p0 \
 | [`reproduce/glm-5.2`](https://github.com/jty1128/PhoenixRepair-core/tree/reproduce/glm-5.2) | GLM-5.2 | TTS Final 33/51；P0 32/51 |
 | [`reproduce/qwen3.7-plus`](https://github.com/jty1128/PhoenixRepair-core/tree/reproduce/qwen3.7-plus) | Qwen-3.7 Plus | TTS Final 17/51；P0 21/51 |
 | [`reproduce/kimi-k2.7-code`](https://github.com/jty1128/PhoenixRepair-core/tree/reproduce/kimi-k2.7-code) | Kimi K2.7 Code | 支持 single/TTS；没有本表对应的 P0 设定或成绩 |
+
+Kimi 新记录的 34/51 包含 8 题追加的 7,200 秒 final 补跑；该复合成绩不等于此分支默认的单轮 3,000 秒 TTS。追加实验需要单独声明预算与全部尝试成本，不能通过 `--resume` 重置或增加原预算。
 
 `phoenix/recovery_profiles.py` 明确记录模型差异。GLM/Qwen 的 Single/TTS 在 7,140 秒停止生成，预留 60 秒提取当前补丁；Kimi 保留完整 3,000 秒生成时限，之后另用最多 60 秒提取。Kimi 保留 thinking/reasoning 回传。各模型的请求超时、输出上限和 summary 重试规则见下表及后文，不会在恢复时替换模型。
 
