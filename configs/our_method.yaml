@@ -1,9 +1,9 @@
 # The pre-review P0 row: complete localization -> guided author generation.
 # No patch review, repair, P1 selection, or benchmark evaluation is run.
-model: glm-5.2
+model: qwen3.7-plus
 instances: null
 runtime: null
-output: runs/our-method-p0
+output: runs/qwen3.7-plus-p0
 concurrency: 4
 max_steps: 200
 localization_max_steps: 150
