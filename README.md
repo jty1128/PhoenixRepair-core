@@ -213,6 +213,8 @@ bash our_method.sh --model glm-5.2 --output runs/glm-p0 \
 | [`reproduce/qwen3.7-plus`](https://github.com/jty1128/PhoenixRepair-core/tree/reproduce/qwen3.7-plus) | Qwen-3.7 Plus | TTS Final 17/51；P0 21/51 |
 | [`reproduce/kimi-k2.7-code`](https://github.com/jty1128/PhoenixRepair-core/tree/reproduce/kimi-k2.7-code) | Kimi K2.7 Code | 支持 single/TTS；没有本表对应的 P0 设定或成绩 |
 
+Kimi 新记录的 34/51 包含 8 题追加的 7,200 秒 final 补跑；该复合成绩不等于此分支默认的单轮 3,000 秒 TTS。追加实验需要单独声明预算与全部尝试成本，不能通过 `--resume` 重置或增加原预算。
+
 `phoenix/recovery_profiles.py` 明确记录模型差异。GLM/Qwen 的 Single/TTS 在 7,140 秒停止生成，预留 60 秒提取当前补丁；Kimi 保留完整 3,000 秒生成时限，之后另用最多 60 秒提取。Kimi 保留 thinking/reasoning 回传。各模型的请求超时、输出上限和 summary 重试规则见下表及后文，不会在恢复时替换模型。
 
 已移植镜像检查与固定 digest、环境启动重试、运行时兼容修复、命令/启动 I/O 闸门、可选自适应准入、超时补丁提取、轨迹续跑、跨容器提交重放和测试文件清理。提交重放只验证原补丁的文件内容与权限；没有新增模型审核、P1 或按题目定制的修复逻辑。
