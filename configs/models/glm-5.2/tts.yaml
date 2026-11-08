@@ -1,0 +1,10 @@
+# Independent samples -> same-model comparison -> fresh final generation.
+model: glm-5.2
+instances: null
+runtime: null
+output: runs/glm-5.2-tts
+concurrency: 4
+samples: 3
+max_steps: 200
+task_timeout: null
+api_base: null

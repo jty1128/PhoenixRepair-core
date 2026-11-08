@@ -1,0 +1,14 @@
+# The pre-review P0 row: complete localization -> guided author generation.
+# No patch review, repair, P1 selection, or benchmark evaluation is run.
+model: glm-5.2
+instances: null
+runtime: null
+output: runs/glm-5.2-p0
+concurrency: 4
+max_steps: 200
+localization_max_steps: 150
+localization_timeout: null
+task_timeout: 7200
+api_base: null
+stage: all
+locations: null  # Optional frozen same-model location directory.

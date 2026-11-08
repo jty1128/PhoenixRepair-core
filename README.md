@@ -203,17 +203,25 @@ bash our_method.sh --model glm-5.2 --output runs/glm-p0 \
   --concurrency 12 --adaptive-io --io-device YOUR_BLOCK_DEVICE
 ```
 
-## 模型分支与恢复
+## 模型配置与恢复
 
-共享实现维护在 `main`；以下 Git 分支分别设置模型默认值，保留同一套方法代码和恢复测试：
+代码和模型配置统一维护在 `main`。原三个模型分支的默认配置已原样保存在下列目录，使用 `--config` 选择即可；也可直接使用 `--model`，无需切换 Git 分支。
 
-| 分支 | 默认模型 | 对应方法与历史通过数 |
+| 配置目录 | 默认模型 | 对应方法与历史通过数 |
 | --- | --- | --- |
-| [`reproduce/glm-5.2`](https://github.com/jty1128/PhoenixRepair-core/tree/reproduce/glm-5.2) | GLM-5.2 | TTS Final 33/51；P0 32/51 |
-| [`reproduce/qwen3.7-plus`](https://github.com/jty1128/PhoenixRepair-core/tree/reproduce/qwen3.7-plus) | Qwen-3.7 Plus | TTS Final 17/51；P0 21/51 |
-| [`reproduce/kimi-k2.7-code`](https://github.com/jty1128/PhoenixRepair-core/tree/reproduce/kimi-k2.7-code) | Kimi K2.7 Code | 支持 single/TTS；没有本表对应的 P0 设定或成绩 |
+| [configs/models/glm-5.2](configs/models/glm-5.2) | GLM-5.2 | TTS Final 33/51；P0 32/51 |
+| [configs/models/qwen3.7-plus](configs/models/qwen3.7-plus) | Qwen-3.7 Plus | TTS Final 17/51；P0 21/51 |
+| [configs/models/kimi-k2.7-code](configs/models/kimi-k2.7-code) | Kimi K2.7 Code | 支持 single/TTS；没有本表对应的 P0 设定或成绩 |
 
-Kimi 新记录的 34/51 包含 8 题追加的 7,200 秒 final 补跑；该复合成绩不等于此分支默认的单轮 3,000 秒 TTS。追加实验需要单独声明预算与全部尝试成本，不能通过 `--resume` 重置或增加原预算。
+```bash
+bash run_tts.sh --config configs/models/glm-5.2/tts.yaml
+bash our_method.sh --config configs/models/qwen3.7-plus/our_method.yaml
+bash run_single.sh --config configs/models/kimi-k2.7-code/single.yaml
+```
+
+每个目录保留原分支的三个配置文件；Kimi 的 `our_method.yaml` 仍明确拒绝运行，不代表支持 Kimi P0。根目录下原有三个 bash 入口及默认配置继续可用。
+
+Kimi 新记录的 34/51 包含 8 题追加的 7,200 秒 final 补跑；该复合成绩不等于默认配置的单轮 3,000 秒 TTS。追加实验需要单独声明预算与全部尝试成本，不能通过 `--resume` 重置或增加原预算。Kimi 已补核对原服务器的核心生成参数，但全部 prompt、summary/final 及恢复链尚未完成逐项对应核验。
 
 `phoenix/recovery_profiles.py` 明确记录模型差异。GLM/Qwen 的 Single/TTS 在 7,140 秒停止生成，预留 60 秒提取当前补丁；Kimi 保留完整 3,000 秒生成时限，之后另用最多 60 秒提取。Kimi 保留 thinking/reasoning 回传。各模型的请求超时、输出上限和 summary 重试规则见下表及后文，不会在恢复时替换模型。
 

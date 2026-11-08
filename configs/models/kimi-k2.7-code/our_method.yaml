@@ -1,0 +1,15 @@
+# No scored Kimi P0 profile: this entry fails explicitly unless --model is changed.
+# The pre-review P0 row: complete localization -> guided author generation.
+# No patch review, repair, P1 selection, or benchmark evaluation is run.
+model: kimi-k2.7-code
+instances: null
+runtime: null
+output: runs/kimi-k2.7-code-p0
+concurrency: 4
+max_steps: 200
+localization_max_steps: 150
+localization_timeout: null
+task_timeout: 7200
+api_base: null
+stage: all
+locations: null  # Optional frozen same-model location directory.

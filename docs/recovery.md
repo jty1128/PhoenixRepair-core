@@ -13,7 +13,7 @@
 | TTS summary | 每轮 5 次传输，最多 3 轮 | 每轮 5 次传输，最多 3 轮 | 每轮 3 次传输；耗尽即停止；格式最多 3 轮 |
 | P0 summary | 一次调用，连接/读取 30/240 秒 | 一次调用，连接/读取 30/600 秒 | 无对应历史 P0 profile |
 
-两种 GLM/Qwen 方法共用基础设施恢复代码。模型差异由 `phoenix/recovery_profiles.py` 和 `phoenix/settings.py` 指定，不复制成三套容易分叉的控制器。三个 Git 分支分别设置默认模型与输出目录；也可在 `main` 使用 `--model` 显式选择。
+两种 GLM/Qwen 方法共用基础设施恢复代码。模型差异由 `phoenix/recovery_profiles.py` 和 `phoenix/settings.py` 指定，不复制成三套容易分叉的控制器。原三个模型分支已合并到 `main`，模型默认值与输出目录原样保留在 `configs/models/<model>/`；使用 `--config` 选择对应方法文件，也可用 `--model` 显式选择，无需切换分支。Kimi 的 P0 配置仍明确拒绝运行。
 
 ## 哪些失败会恢复
 
@@ -90,4 +90,4 @@ python -m pytest tests/test_docker.py tests/test_recovery_docker.py -q
 
 历史成绩仍为 GLM TTS 33/51、P0 32/51；Qwen TTS 17/51、P0 21/51。复用当时的同模型定位需要自行提供 `--locations`；默认入口会重新定位。离线对应检查与 Docker 回放证明执行链和恢复性质，不等于重新产生了这四个分数。新的数值必须重新生成并通过同一官方评测核实。
 
-README 中另行更新的 Kimi TTS 34/51 含 8 题追加 7,200 秒 final 补跑，以及原始失败尝试成本。Kimi 分支默认保留 3,000 秒单轮设定，不自动按官方得分选择补跑题目，也不把追加预算伪装成恢复；没有对应的 Kimi P0 成绩。
+README 中另行更新的 Kimi TTS 34/51 含 8 题追加 7,200 秒 final 补跑，以及原始失败尝试成本。Kimi 配置默认保留 3,000 秒单轮设定，不自动按官方得分选择补跑题目，也不把追加预算伪装成恢复；没有对应的 Kimi P0 成绩。已补核对原服务器核心生成参数，但这不等于全部 prompt、summary/final 及恢复链已经逐项对齐。
