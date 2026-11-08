@@ -1,0 +1,17 @@
+#!/bin/sh
+# glibc Python also runs in musl images using a private compatibility bundle.
+# Native image libraries and its musl loader stay untouched.
+if [ -e /lib/ld-musl-x86_64.so.1 ]; then
+    mkdir -p /lib64 /lib/x86_64-linux-gnu
+    ln -sf /opt/phoenix-python/compat-glibc/ld-linux-x86-64.so.2 /lib64/ld-linux-x86-64.so.2
+    for library in /opt/phoenix-python/compat-glibc/*; do
+        name="${library##*/}"
+        [ -e "/lib/x86_64-linux-gnu/$name" ] || ln -s "$library" "/lib/x86_64-linux-gnu/$name"
+    done
+fi
+# Persist only the mounted repository's trust setting: image shell startup
+# files can replace the GIT_CONFIG_* environment passed by docker.
+if [ "${GIT_CONFIG_KEY_0:-}" = safe.directory ] && [ -n "${GIT_CONFIG_VALUE_0:-}" ]; then
+    git config --system --add safe.directory "$GIT_CONFIG_VALUE_0" || exit 1
+fi
+exec /opt/phoenix-python/bin/python3 -c 'from swerex.server import main; main()' --host 127.0.0.1 --port "${PHOENIX_REX_PORT:-8000}" "$@"

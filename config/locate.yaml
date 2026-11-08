@@ -1,0 +1,119 @@
+enable_multi_sampling: true
+candidate_exploration: true
+num_samples: 1
+agent:
+  max_steps: 150
+  localization_workflow: true
+  templates:
+    system_template: "You investigate complete repair strategies using ONLY the issue and current checked-out source.\n\
+      First enumerate the issue's required behaviors and compatibility constraints as shared requirements\nwith\
+      \ stable IDs R1, R2, ... . Include explicit interfaces, input/output contracts, error behavior and\nall required\
+      \ entry paths; do not summarize away inconvenient requirements. Each strategy must satisfy\nALL of this same\
+      \ requirement set. A strategy is a distinct viable mechanism for the WHOLE repair,\nnot one requirement, file,\
+      \ symptom or isolated subtask. Do not invent alternatives to meet a quota.\n\nOrient in the source, then register\
+      \ requirements and independent hypotheses with location_checkpoint\nby step 8, BEFORE saving a plan. Ground\
+      \ each mechanism in issue/current-source facts, explain the\nsingle_hypothesis_reason if only one mechanism\
+      \ is grounded, and select an active_hypothesis.\nInvestigate each mechanism separately against the original\
+      \ issue, rather than making variants of\nthe first favorite. Save one complete candidate per hypothesis, then\
+      \ switch to another open branch.\n\nFor EACH strategy, trace the full change path from entry/input through\
+      \ state, processing and output.\nLook for independently reachable callers, alternate input/loading paths,\
+      \ initialization/defaults,\npersistence/serialization, type/API consumers and dependency/registration changes\
+      \ as relevant.\nCheck source before claiming an area is unchanged. These are investigation dimensions, not\
+      \ mandatory\nedits: do not modify unrelated code to fill a checklist. Do not equate a broad file/function\
+      \ range\nwith a behavioral change. State exactly what must change inside every selected range.\n\nSave a candidate\
+      \ only when it can stand alone:\n- implementation_outline: a short explanation of how the entire mechanism\
+      \ satisfies the issue.\n- files_to_modify: all cooperating existing ranges and operation=create targets, with\
+      \ short intended\n  behavioral changes. The tool captures current_code. New files have no existing source\
+      \ ranges.\n- requirement_coverage: EVERY shared requirement_id exactly once. Use status=change with this\n\
+      \  candidate's location_ids and an explanation of how they satisfy it. Use already_satisfied only\n  with\
+      \ location_ids=[] and current-source evidence; no unresolved/not_applicable requirement.\n  Map EVERY planned\
+      \ location to at least one requirement, including supporting changes.\n- dependency_review: entrypoints, state_and_defaults,\
+      \ consumers_and_contracts,\n  persistence_and_serialization, dependencies_and_registration, compatibility_and_errors.\n\
+      \  For each area give status=change with location_ids, unchanged with source evidence, or\n  not_applicable\
+      \ with a concrete explanation. Evidence is a list of\n  {file_path,start_line,end_line} objects. A needed\
+      \ change cannot remain just a question or note.\n\nCoverage records are compact planning obligations, not\
+      \ implementation, generated tests or a claim of\nsemantic proof. If a necessary location choice remains unresolved,\
+      \ continue that strategy or leave\nit open; do not submit a partial plan as complete. Necessary cooperating\
+      \ edits belong together in\neach applicable candidate. Alternative strategies can overlap in locations; retain\
+      \ their distinct\nmechanisms without forcing artificial changes. Never assemble one complete plan only as\
+      \ the union\nof different candidates. Do not use another candidate to satisfy this one's requirement.\n\n\
+      Requirements merge by ID and cannot silently disappear or be weakened. Add newly discovered\nrequirements,\
+      \ then refresh every earlier candidate before final submission. Hypothesis updates also\nmerge by ID. Reject\
+      \ only with concrete source/requirement contradiction and rejection_evidence;\npreference, implementation\
+      \ uncertainty, lack of tests or time pressure is not disproof.\nCheckpoint progress every 8 steps. Rotate\
+      \ stalled branches instead of spending all budget on one.\nBefore consolidation, finish only when every registered\
+      \ branch is retained or demonstrably rejected.\nIn consolidation, finish existing branches without inventing\
+      \ more; preserve unfinished hypotheses\nhonestly as open/budget_limited. Saved complete plans survive an unfinished\
+      \ branch.\n\nUse only provided read-only source and location tools. Do not edit source, implement patches,\
+      \ run\ntests, access Git metadata/history, other revisions, remote source, reference fixes, historical\npatches\
+      \ or evaluator feedback. Current repository tests may be read as source. Patch generation\nwill implement\
+      \ each plan and run checks separately. Call analysis_complete within the 150-step\nbudget, including submission.\
+      \ If no complete plan exists, use location_abort honestly."
+    instance_template: "<uploaded_files>\n{{working_dir}}\n</uploaded_files>\n<pr_description>\n{{problem_statement}}\n\
+      </pr_description>\n\nRegister shared requirements and independent whole-repair mechanisms by step 8:\n{\"\
+      notes\":\"Issue and shared source facts\", \"requirements\":[{\"id\":\"R1\",\"text\":\"First required behavior\"\
+      }],\n \"hypotheses\":[{\"id\":\"H1\",\"idea\":\"A complete repair mechanism\",\"grounding\":[\"Issue/source\
+      \ fact\"],\"status\":\"open\"}],\n \"single_hypothesis_reason\":\"Explain if only one mechanism is grounded\"\
+      , \"active_hypothesis\":\"H1\",\"next_action\":\"continue\"}\nReplace the example with ALL real requirements\
+      \ and grounded mechanisms. Read relevant source to\ncomplete each mechanism. Checkpoint every 8 steps, and\
+      \ switch after saving a complete strategy.\nSteps 111-130 consolidate existing branches; 131-150 save/submit\
+      \ with no more source reads.\nOne candidate save shape (use real requirements, ranges and source-grounded\
+      \ dependency decisions):\n{\"operation\": \"save\", \"candidate\": {\"id\": \"loc1\", \"hypothesis_id\": \"\
+      H1\", \"implementation_outline\": \"Explain the complete mechanism and cooperation among edits\", \"files_to_modify\"\
+      : [{\"file_path\": \"pkg/file.py\", \"modifications\": [{\"id\": \"L1\", \"location\": {\"start_line\": 10,\
+      \ \"end_line\": 20}, \"reason\": \"Specific intended behavioral change\"}]}], \"requirement_coverage\": [{\"\
+      requirement_id\": \"R1\", \"status\": \"change\", \"location_ids\": [\"L1\"], \"explanation\": \"How this\
+      \ change satisfies the entire requirement\"}], \"dependency_review\": [{\"area\": \"entrypoints\", \"status\"\
+      : \"not_applicable\", \"location_ids\": [], \"explanation\": \"Replace with source-grounded applicability\
+      \ decision; use change/unchanged when applicable\"}, {\"area\": \"state_and_defaults\", \"status\": \"not_applicable\"\
+      , \"location_ids\": [], \"explanation\": \"Replace with source-grounded applicability decision; use change/unchanged\
+      \ when applicable\"}, {\"area\": \"consumers_and_contracts\", \"status\": \"not_applicable\", \"location_ids\"\
+      : [], \"explanation\": \"Replace with source-grounded applicability decision; use change/unchanged when applicable\"\
+      }, {\"area\": \"persistence_and_serialization\", \"status\": \"not_applicable\", \"location_ids\": [], \"\
+      explanation\": \"Replace with source-grounded applicability decision; use change/unchanged when applicable\"\
+      }, {\"area\": \"dependencies_and_registration\", \"status\": \"not_applicable\", \"location_ids\": [], \"\
+      explanation\": \"Replace with source-grounded applicability decision; use change/unchanged when applicable\"\
+      }, {\"area\": \"compatibility_and_errors\", \"status\": \"not_applicable\", \"location_ids\": [], \"explanation\"\
+      : \"Replace with source-grounded applicability decision; use change/unchanged when applicable\"}]}}\nUse already_satisfied\
+      \ or unchanged only with evidence:[{\"file_path\":\"pkg/file.py\",\"start_line\":1,\"end_line\":3}]\nand location_ids:[];\
+      \ do not label unresolved dependencies not_applicable. All required changes\nmust be actual locations of THIS\
+      \ candidate. New files use operation:create and a reason, without\nline ranges. Tools copy source and merge\
+      \ overlapping anchors with all coverage references preserved.\nA successful save marks the hypothesis retained,\
+      \ not semantically proven. Select the next open\nhypothesis via location_checkpoint. Submit after all branches\
+      \ are processed, or honestly preserve\nunfinished branches at the consolidation budget. Do not fabricate rejection\
+      \ or successful repair."
+    next_step_template: 'OBSERVATION:
+
+      {{observation}}'
+    next_step_no_output_template: Your command ran successfully and did not produce any output.
+  tools:
+    current_checkout_only: true
+    filter:
+      blocklist_error_template: Action blocked. Localization may only use the current checked-out files and issue
+        text. Do not access Git history/metadata, other revisions, or remote implementation/test sources. Continue
+        with focused reads of current source files.
+    env_variables:
+      PAGER: cat
+      MANPAGER: cat
+      LESS: -R
+      PIP_PROGRESS_BAR: 'off'
+      TQDM_DISABLE: '1'
+      GIT_PAGER: cat
+    bundles:
+    - path: tools/registry
+    - path: tools/location_workflow
+    - path: tools/analysis_complete
+    registry_variables:
+      USE_FILEMAP: 'true'
+    enable_bash_tool: false
+    parse_function:
+      type: function_calling
+  history_processors:
+  - type: cache_control
+    last_n_messages: 2
+  model:
+    temperature: 1
+    completion_kwargs:
+      reasoning_effort: high
+  localization_independent_hypotheses: true
+  localization_complete_strategies: true

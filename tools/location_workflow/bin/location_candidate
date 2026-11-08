@@ -1,0 +1,4 @@
+#!/usr/bin/env python3
+from location_lib import main
+
+main('location_candidate')

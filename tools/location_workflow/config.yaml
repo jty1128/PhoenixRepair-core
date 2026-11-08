@@ -1,0 +1,61 @@
+tools:
+  location_read:
+    docstring: Read, search or list current source without executing code. See request schema.
+    arguments:
+    - name: request
+      type: string
+      description: 'Read ONLY current repository source. JSON request: {"operation":"search","path":"relative/directory","pattern":"symbol1|symbol2"}
+        or {"operation":"read","path":"file.py","start_line":1,"end_line":100} or {"operation":"list","path":"."}.
+        At most 200 source lines or 100 search hits. No shell, tests, edits or Git metadata. Unavailable in submission
+        phase.'
+      required: true
+  location_checkpoint:
+    docstring: Register independent whole-repair hypotheses, select an active branch, and record its outcome.
+    arguments:
+    - name: request
+      type: string
+      description: 'JSON: {"notes":"Shared source facts", "hypotheses":[{"id":"H1","idea":"Complete repair mechanism","grounding":["Issue/current-source
+        evidence"],"status":"open"}], "single_hypothesis_reason":"Why only one grounded mechanism exists, if applicable",
+        "active_hypothesis":"H1","next_action":"continue"}. Register before saving candidates. Multiple hypotheses
+        are alternative whole repairs, not individual required edits. Updates merge by id; omitted branches survive.
+        Select each open hypothesis and complete its own candidate before refining retained ones. Rejection requires
+        status=rejected, reason and rejection_evidence (list of concrete source/requirement facts). Saved branches
+        are marked retained automatically. Retained/rejected/open are the only states. next_action is continue/switch/finalize;
+        early finalize is refused with open branches. At budget consolidation unfinished branches may remain open.
+        No test plans or patches. For complete_strategy_v1, initially also supply requirements:[{"id":"R1","text":"Required
+        behavior"}] shared by ALL hypotheses. Requirements merge by id; existing text cannot be weakened. New requirements
+        require refreshing all saved candidates before submission.'
+      required: true
+  location_candidate:
+    docstring: Save one hypothesis's complete repair locations and short intentions; no tests or patch generation.
+    arguments:
+    - name: request
+      type: string
+      description: 'JSON: {"operation":"save","candidate":{"id":"loc1","hypothesis_id":"H1","files_to_modify":[{"file_path":"pkg/file.py","modifications":[{"id":"L1","location":{"start_line":10,"end_line":20},"reason":"Short
+        intended edit to this function/class"}]}]}}. Use the active registered hypothesis; save its FULL cooperating
+        location set (body/defaults/callers/imports/registration where needed). Each hypothesis owns a distinct
+        candidate. Save marks it retained, then switch to remaining open hypotheses. No unresolved_questions, per-location
+        tests, implementation code or patch is required. Current source is copied automatically; do not send current_code.
+        New file: {"file_path":"pkg/new.py","operation":"create","modifications":[{"id":"L2","reason":"What the
+        new file provides"}]} with no source ranges; this does not create the file. Overlaps merge only within this
+        candidate, preserving intentions. Same candidate id replaces this branch only. get/list inspect saved candidates.
+        remove needs id, reason and rejection_evidence (list of concrete source/issue contradictions); uncertainty
+        and preference are not disproof. validate checks readiness to submit. Retain all supported complete alternatives
+        and call analysis_complete when registered branches are processed or the budget reaches consolidation. Output
+        locations only; implementation and testing belong to the patch stage. For complete_strategy_v1 additionally
+        supply implementation_outline, requirement_coverage:[{requirement_id,status:change|already_satisfied,location_ids,explanation,evidence}],
+        and dependency_review:[{area,status:change|unchanged|not_applicable,location_ids,explanation,evidence}].
+        Cover EVERY shared requirement and map every edit to one. Review entrypoints,state_and_defaults,consumers_and_contracts,persistence_and_serialization,dependencies_and_registration,compatibility_and_errors.
+        Unchanged claims need evidence:[{file_path,start_line,end_line}]. No code/tests are required. Dependencies
+        marked change must have concrete locations; incomplete plans are refused.'
+      required: true
+  location_abort:
+    docstring: Stop unsuccessfully with a reason when no supported candidate exists.
+    arguments:
+    - name: reason
+      type: string
+      description: End localization without a submission when no supported complete candidate exists. Provide a
+        concise plain-text reason with missing evidence/coverage. Refused while saved candidates remain; submit
+        supported candidates or remove refuted ones first. Does not create a successful localization.
+      required: true
+state_command: _state_location

@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phoenixrepair-core"
+version = "0.1.0"
+description = "Single sampling, TTS, and complete-localization-guided P0 patch generation"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {file = "LICENSE"}
+dependencies = [
+  "swe-rex==1.4.0", "litellm==1.108.1", "pydantic>=2.11,<3", "pydantic-settings",
+  "PyYAML", "ruamel.yaml", "jinja2", "requests", "tiktoken", "jsonschema",
+  "datasets", "numpy", "pandas", "rich", "tenacity", "unidiff", "simple-parsing",
+  "rich-argparse", "python-dotenv", "GitPython", "ghapi", "bashlex", "tabulate",
+  "mcp>=2.3,<3", "httpx[socks]", "packaging", "pexpect", "textual>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "build"]
+runtime = ["uv"]
+
+[project.scripts]
+phoenix-repair = "phoenix.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["phoenix*", "sweagent*"]
+namespaces = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

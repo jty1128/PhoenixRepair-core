@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+
+import argparse
+from pathlib import Path
+import subprocess
+import sys
+import os
+import io
+
+from registry import registry
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Submit changes for review")
+    parser.add_argument("-f", "--force", action="store_true", help="Force submit without review")
+    args = parser.parse_args()
+
+    repo_root = registry.get("ROOT", os.getenv("ROOT"))
+    assert repo_root
+
+    patch_path = Path(os.environ.get('PHOENIX_PATCH_OUTPUT', '/root/model.patch'))
+
+    # Bound Git work inside the longer framework submission budget. Keep the
+    # last complete patch intact until a new patch has been collected in full.
+    temporary = patch_path.with_suffix('.patch.tmp')
+    try:
+        subprocess.run(['git', 'add', '-A'], cwd=repo_root, check=True, timeout=480)
+        with temporary.open('w') as stream:
+            subprocess.run(['git', 'diff', '--cached', '--binary', '--no-ext-diff'],
+                           cwd=repo_root, stdout=stream, check=True, timeout=60)
+        temporary.replace(patch_path)
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
+        temporary.unlink(missing_ok=True)
+        marker = '[SUBMISSION_INFRASTRUCTURE_TIMEOUT] ' if isinstance(exc, subprocess.TimeoutExpired) else ''
+        print(f'{marker}Patch collection failed: {exc}. No successful submission was recorded.', file=sys.stderr)
+        return
+
+    patch = patch_path.read_text(errors="backslashreplace")
+
+    submit_review_messages = registry.get("SUBMIT_REVIEW_MESSAGES", [])
+    n_stages = len(submit_review_messages)
+    current_stage = registry.get("SUBMIT_STAGE", 0)
+    if not args.force and current_stage != n_stages:
+        message = submit_review_messages[current_stage]
+        message = message.replace("{{diff}}", patch)
+        message = message.replace("{{problem_statement}}", registry.get("PROBLEM_STATEMENT", ""))
+        registry["SUBMIT_STAGE"] = current_stage + 1
+        print(message)
+        sys.exit(0)
+
+    print("<<SWE_AGENT_SUBMISSION>>")
+    print(patch)
+    print("<<SWE_AGENT_SUBMISSION>>")
+
+
+if __name__ == "__main__":
+    # There are some super strange "ascii can't decode x" errors when printing to the terminal
+    # that can be solved with setting the default encoding for stdout
+    # (note that python3.6 doesn't have the reconfigure method)
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+    main()
