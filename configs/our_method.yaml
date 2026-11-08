@@ -3,7 +3,7 @@
 model: glm-5.2
 instances: null
 runtime: null
-output: runs/our-method-p0
+output: runs/glm-5.2-p0
 concurrency: 4
 max_steps: 200
 localization_max_steps: 150

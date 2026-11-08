@@ -2,7 +2,7 @@
 model: glm-5.2
 instances: null  # Set a manifest path here, with --instances, or INSTANCES in .env.
 runtime: null    # Set a runtime path here, with --runtime, or PHOENIX_RUNTIME.
-output: runs/single
+output: runs/glm-5.2-single
 concurrency: 4
 max_steps: 200
 task_timeout: null  # Profile default: GLM/Qwen 7200 seconds; Kimi 3000.

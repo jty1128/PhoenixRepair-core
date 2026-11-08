@@ -2,7 +2,7 @@
 model: glm-5.2
 instances: null
 runtime: null
-output: runs/tts
+output: runs/glm-5.2-tts
 concurrency: 4
 samples: 3
 max_steps: 200
