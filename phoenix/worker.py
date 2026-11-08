@@ -9,12 +9,17 @@ from pathlib import Path
 import shlex
 import shutil
 import sys
+import time
+import signal
+import threading
 
 import yaml
 
 from phoenix.p0_guidance import IMPLEMENTATION_GUIDANCE
 from phoenix.prompts import PromptBuilder
 from phoenix.settings import ROOT, model_config, write_json
+from phoenix.run_state import read, digest, process_identity, lock
+from phoenix.resources import io_slot
 
 RUNTIME_PYTHON = "/opt/phoenix-python/bin/python3"
 
@@ -69,7 +74,8 @@ def build_config(request):
         guidance = ""
     runtime = Path(settings["runtime"])
     port = request["port"]
-    docker_args = ["--network=host", "--user=0", "--entrypoint=", "--cpus=" + str(settings["container_cpus"]),
+    docker_args = ["--network=host", "--user=0", "--entrypoint=", "--sig-proxy=false",
+                   "--cpus=" + str(settings["container_cpus"]),
                    "--memory=" + settings["container_memory"], "--pids-limit=512",
                    "--label", "phoenixrepair.run=" + request["run_id"],
                    "--label", "phoenixrepair.job=" + request["job_id"],
@@ -78,11 +84,23 @@ def build_config(request):
                    "-e", f"PHOENIX_REX_PORT={port}", "-e", "PIP_DISABLE_PIP_VERSION_CHECK=1",
                    "-e", "GIT_CONFIG_COUNT=1", "-e", "GIT_CONFIG_KEY_0=safe.directory",
                    "-e", "GIT_CONFIG_VALUE_0=/" + task["repo_name"]]
+    if settings.get("pin_cpus"):
+        cpus = sorted(os.sched_getaffinity(0))
+        start = (port % max(1, len(cpus) // 2)) * 2
+        docker_args.append("--cpuset-cpus=" + ",".join(map(str, cpus[start:start + 2])))
+    if os.environ.get("PHOENIX_CONTAINER_PROXY"):
+        # Inherit values through the worker environment, never serialize them.
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+            os.environ[name] = os.environ["PHOENIX_CONTAINER_PROXY"]
+            docker_args += ["-e", name]
+        for name in ("NO_PROXY", "no_proxy"):
+            os.environ[name] = "localhost,127.0.0.1,::1"
+            docker_args += ["-e", name]
     config = {
         "agent": agent.model_dump(mode="json"),
         "env": {"repository_setup_timeout": 900,
                 "post_startup_commands": ["export GOMAXPROCS=2; export GOFLAGS=\"${GOFLAGS:-} -p=2\""],
-                "deployment": {"type": "docker", "image": task["image_name"], "pull": "never",
+                "deployment": {"type": "docker", "image": request.get("image_id", task["image_name"]), "pull": "never",
                                "python_standalone_dir": "", "port": port, "startup_timeout": 300,
                                "docker_args": docker_args},
                 "repo": {"type": "preexisting", "repo_name": task["repo_name"], "base_commit": task["base_commit"]}},
@@ -94,14 +112,20 @@ def build_config(request):
     return config, guidance
 
 
-def install_p0_budget(agent, allowance, final_stage, stage=None):
+def install_p0_budget(agent, allowance, final_stage, stage=None, initial_calls=0):
     """Retain the historical author allowance and reminders, then stop at P0."""
     from sweagent.agent.hooks.abstract import AbstractAgentHook
     from sweagent.exceptions import InstanceCallLimitExceededError
 
     class AuthorBudget(AbstractAgentHook):
         def __init__(self):
-            self.calls = 0
+            self.calls = initial_calls
+
+        def persist(self):
+            if stage is not None:
+                write_json(stage / "author_budget.json", {"attempted_calls": self.calls,
+                    "generation_allowance": allowance, "review_calls": 0, "repair_calls": 0,
+                    "output_stage": "P0" if final_stage else "candidate"})
 
         def on_init(self, *, agent):
             original = agent.model.query
@@ -110,6 +134,7 @@ def install_p0_budget(agent, allowance, final_stage, stage=None):
                 if self.calls >= allowance:
                     raise InstanceCallLimitExceededError("Initial P0 generation allowance reached; collect the current patch")
                 self.calls += 1
+                self.persist()  # Charge before the request, including failed/in-flight calls.
                 return original(*args, **kwargs)
             agent.model.query = query
             if stage is not None:
@@ -165,6 +190,112 @@ def install_p0_budget(agent, allowance, final_stage, stage=None):
     return hook
 
 
+def replay_patch(env, request, stage):
+    recovery = request["recovery"]
+    patch = Path(recovery["patch"])
+    if digest(patch) != recovery["patch_sha256"]:
+        raise ValueError("Preserved patch changed before replay")
+    if recovery["mode"] == "continue" and not patch.read_bytes().strip():
+        # A verified empty capture means the recovered base needs no edits.
+        (stage / "replayed.patch").write_text("")
+        result = {"restored_clean_base": True, "model_calls_used": 0}
+        write_json(stage / "replay.json", result)
+        return result
+    env.write_file("/root/phoenix_submission_probe.py", Path(__file__).with_name("submission_probe.py").read_text())
+    env.write_file("/root/phoenix_preserved.patch", patch.read_text())
+    args = dict(operation="replay_submission", root="/" + env.repo.repo_name,
+                patch_path="/root/phoenix_preserved.patch",
+                clean_tests=request["settings"]["method"] == "our_method" and recovery["mode"] == "submission",
+                expected_tree=recovery.get("patched_tree"))
+    output = env.communicate(RUNTIME_PYTHON + " /root/phoenix_submission_probe.py " +
+                             shlex.quote(json.dumps(args)), check="ignore", timeout=180)
+    result = json.loads(output.strip().splitlines()[-1])
+    (stage / "replayed.patch").write_text(result.pop("patch"))
+    write_json(stage / "replay.json", {**result, "original_model_calls": request.get("prior_calls", 0),
+                                     "budget_reset": False, "same_model": request["settings"]["model"]})
+    return result
+
+
+def install_durability(agent, request, budget):
+    from sweagent.agent.hooks.abstract import AbstractAgentHook
+    stage = Path(request["stage_dir"])
+
+    class Durability(AbstractAgentHook):
+        def __init__(self):
+            self.calls = request.get("prior_calls", 0)
+
+        def on_init(self, *, agent):
+            self.agent = agent
+            original = agent.model.query
+            def charged(*a, **kw):
+                if request.get("deadline") and time.time() >= request["deadline"]:
+                    raise TimeoutError("Original generation deadline reached; no further model request")
+                if budget is None or budget.calls < request["generation_allowance"]:
+                    # An interrupted in-flight step is charged conservatively;
+                    # it cannot disappear because no observation was written.
+                    write_json(stage / "query-state.json", {
+                        "reserved_step": request.get("steps_offset", 0) + len(agent.trajectory) + 1})
+                    write_json(stage / "checkpoint.json", agent.get_trajectory_data())
+                if budget is None:
+                    self.calls += 1
+                    write_json(stage / "author_budget.json", {"attempted_calls": self.calls,
+                        "generation_allowance": None, "review_calls": 0, "repair_calls": 0})
+                return original(*a, **kw)
+            agent.model.query = charged
+
+        def on_run_start(self):
+            recovery = request.get("recovery") or {}
+            path = recovery.get("trajectory")
+            if path:
+                if digest(path) != recovery["trajectory_sha256"]:
+                    raise ValueError("Preserved trajectory changed before recovery")
+                data = read(path)
+                self.agent.history = data["history"]
+                self.agent.trajectory[:] = data["trajectory"]
+                # Tool execution allowance is cumulative too, including when
+                # the previous container was replaced.
+                self.agent._total_execution_time = request.get("prior_execution_seconds", 0)
+                self.agent.info.update(data["info"])
+                self.agent.info.update(submission=None, exit_status=None)
+                stats = data["info"].get("model_stats")
+                if stats:
+                    self.agent.model.stats = type(self.agent.model.stats).model_validate(stats)
+                self.agent.history.append({"role": "user", "agent": self.agent.name,
+                    "content": "The execution environment was recovered after an infrastructure failure. "
+                    "Your saved code and completed trajectory were restored. The last interrupted operation "
+                    "may not have completed; inspect its current state before repeating it. "
+                    "The original issue and remaining budget still apply."})
+            elif request.get("prior_steps", 0):
+                # Only used when the disposable container and recoverable diff
+                # are both unavailable. Never grant another full trajectory.
+                self.agent.history.append({"role": "user", "agent": self.agent.name,
+                    "content": "The previous container was lost and no verified working patch was recoverable. "
+                    "This is the original base checkout. Previously charged work remains charged; "
+                    "continue under the remaining stage budget."})
+            self.agent.max_steps = max(1, self.agent.max_steps - request.get("steps_offset", 0))
+            self.agent._total_execution_time = max(self.agent._total_execution_time,
+                                                   request.get("prior_execution_seconds", 0))
+            write_json(stage / "worker-status.json", {"status": "generating", "at": time.time()})
+
+        def on_step_done(self, *, step, info):
+            # Atomic checkpoint replaces the upstream non-atomic .traj write as
+            # the source for recovery. It contains no extra model-facing text.
+            write_json(stage / "checkpoint.json", self.agent.get_trajectory_data())
+            write_json(stage / "step-state.json", {
+                "steps": request.get("steps_offset", 0) + len(self.agent.trajectory),
+                "model_calls": budget.calls if budget else self.calls,
+                "execution_seconds": self.agent._total_execution_time,
+                "exit_status": info.get("exit_status"), "at": time.time()})
+            if step.done and (step.submission is not None or str(step.exit_status).startswith('submitted')):
+                (stage / "submitted.patch").write_text(step.submission or '')
+                write_json(stage / "submission.json", {"patch_sha256": digest(stage / "submitted.patch"),
+                    "model_calls": budget.calls if budget else self.calls, "exit_status": step.exit_status})
+
+    hook = Durability()
+    agent.add_hook(hook)
+    return hook
+
+
 def execute(request):
     from sweagent.environment import history_isolation
     from sweagent.run.hooks.abstract import RunHook
@@ -174,6 +305,7 @@ def execute(request):
 
     stage = Path(request["stage_dir"])
     stage.mkdir(parents=True, exist_ok=True)
+    write_json(stage / "worker-status.json", {"status": "starting", "at": time.time()})
     config, guidance = build_config(request)
     (stage / "config.yaml").write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False))
     (stage / "guidance.txt").write_text(guidance)
@@ -191,20 +323,66 @@ def execute(request):
             audit = json.loads(env.communicate(command, check="raise", timeout=480).strip().splitlines()[-1])
             env.repo.base_commit = audit["snapshot_commit"]
             write_json(stage / "history_isolation.json", audit)
+            if (request.get("recovery") or {}).get("mode") == "continue":
+                replay_patch(env, request, stage)
 
     runner = RunSingle.from_config(RunSingleConfig.model_validate(config))
+    if request.get("managed_recovery"):
+        # RunSingle closes even after a handled environment error. The host
+        # controller must inspect/capture that checkout before removing it.
+        runner.env.close = lambda: None
+        runner.env.deployment._controller_managed = True
     runner.add_hook(IsolateHistory())
+    original_communicate = runner.env.communicate
+    def bounded_commands(*a, **kw):
+        with io_slot(Path(request["settings"]["output"]), "commands",
+                     request["settings"].get("local_command_concurrency", 4),
+                     request.get("deadline")):
+            return original_communicate(*a, **kw)
+    runner.env.communicate = bounded_commands
+    original_start = runner.env.start
+    def gated_start():
+        with io_slot(Path(request["settings"]["output"]), "start",
+                     request["settings"].get("environment_start_concurrency", 2),
+                     request.get("deadline")):
+            return original_start()
+    runner.env.start = gated_start
     hook = None
     if request["settings"]["method"] == "our_method":
-        hook = install_p0_budget(runner.agent, request["generation_allowance"], request["final_stage"], stage)
+        hook = install_p0_budget(runner.agent, request["generation_allowance"], request["final_stage"],
+                                 stage, request.get("prior_calls", 0))
+        hook.persist()
+    install_durability(runner.agent, request, hook)
+    failed = False
     try:
-        runner.run()
+        if (request.get("recovery") or {}).get("mode") == "submission":
+            runner.env.start()
+            IsolateHistory().on_instance_start(index=0, env=runner.env, problem_statement=runner.problem_statement)
+            replay = replay_patch(runner.env, request, stage)
+            patch = (stage / "replayed.patch").read_text()
+            (stage / "submitted.patch").write_text(patch)
+            if request["settings"]["method"] == "our_method":
+                (stage / "P0.patch").write_text(patch)
+                write_json(stage / "P0.json", {"model_calls": request.get("prior_calls", 0),
+                    "mechanical_validation": replay["mechanical_validation"], "review_calls": 0, "repair_calls": 0})
+            write_json(stage / "submission.json", {"patch_sha256": digest(stage / "submitted.patch"),
+                "model_calls": request.get("prior_calls", 0), "exit_status": "submitted (recovered)"})
+        else:
+            runner.run()
+        write_json(stage / "worker-status.json", {"status": "completed", "at": time.time()})
+    except BaseException as exc:
+        failed = True
+        write_json(stage / "worker-status.json", {"status": "failed", "error_type": type(exc).__name__, "at": time.time()})
+        raise
     finally:
         if hook:
             write_json(stage / "author_budget.json", {"attempted_calls": hook.calls,
                 "generation_allowance": request["generation_allowance"], "review_calls": 0,
                 "repair_calls": 0, "output_stage": "P0" if request["final_stage"] else "candidate"})
-        runner.env.close()
+        # Keep a failed managed container for stopped-tree capture by its
+        # controller; the controller always owns final cleanup.
+        if not failed or not request.get("managed_recovery"):
+            runner.env.close()
 
 
 def main():
@@ -212,9 +390,47 @@ def main():
     parser.add_argument("request", type=Path)
     args = parser.parse_args()
     request = json.loads(args.request.read_text())
+    with lock(Path(request['stage_dir']) / 'worker.lock', blocking=False):
+        run_owned(request)
+
+
+def run_owned(request):
+    ident = process_identity(os.getpid())
+    if ident["pgid"] == os.getpid():
+        process = {"pid": os.getpid(), "start_ticks": ident["start_ticks"],
+                   "started_at": request.get("started_at", time.time())}
+        write_json(Path(request["stage_dir"]) / "process.json", process)
     os.environ["PHOENIX_TASK_ID"] = request["task"]["instance_id"]
     os.environ["PHOENIX_STAGE"] = request["job_id"]
-    execute(request)
+    done = threading.Event()
+    def watchdog():
+        if done.wait(max(0, request["deadline"] - time.time())):
+            return
+        stage = Path(request["stage_dir"])
+        write_json(stage / "termination.json", {"reason": "wall_timeout", "at": time.time()})
+        # The same deadline blocks every new query/command. Quiesce any
+        # in-flight container command before capture, even while the controller
+        # is offline. The controller's parallel capture is serialized by lock.
+        from phoenix.capture import capture_checkout
+        try:
+            capture_checkout(request, os.environ.copy(), stage,
+                official=request["settings"]["method"] != "our_method"
+                         and request["settings"]["model"] != "kimi-k2.7-code",
+                timeout=request.get("capture_reserve", 60))
+        finally:
+            current = process_identity(os.getpid())
+            if current and current['start_ticks'] == ident['start_ticks'] and current['pgid'] == os.getpid():
+                os.killpg(os.getpid(), signal.SIGKILL)
+    if request.get("managed_recovery") and request.get("deadline"):
+        if ident["pgid"] != os.getpid():
+            raise RuntimeError("Managed worker must have its own process group")
+        # Keep the interpreter alive until an already-started timeout capture
+        # finishes. Normal completion sets done and wakes this thread at once.
+        threading.Thread(target=watchdog, daemon=False, name="generation-deadline").start()
+    try:
+        execute(request)
+    finally:
+        done.set()
 
 
 if __name__ == "__main__":

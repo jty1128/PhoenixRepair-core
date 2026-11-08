@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import signal
 
 from phoenix.settings import ROOT, PROFILES, fingerprint, load_instances, load_settings, write_json
 
@@ -19,7 +20,8 @@ def main(argv=None):
     parser.add_argument("--config", type=Path)
     parser.add_argument("--model", choices=tuple(PROFILES))
     parser.add_argument("--instances", type=Path, help="JSON array or JSONL task manifest")
-    parser.add_argument("--output", type=Path, help="New output directory; existing runs are never overwritten")
+    parser.add_argument("--output", type=Path, help="Run directory; use --resume to continue the same run")
+    parser.add_argument("--resume", action="store_true", help="Adopt this run's workers and reuse verified stages without resetting budgets")
     parser.add_argument("--runtime", type=Path, help="Prepared portable tool runtime (or PHOENIX_RUNTIME)")
     parser.add_argument("--api-base")
     parser.add_argument("--concurrency", type=int)
@@ -31,6 +33,8 @@ def main(argv=None):
     parser.add_argument("--docker-host")
     parser.add_argument("--locations", type=Path, help="Reuse same-model locations with verified task identity")
     parser.add_argument("--stage", choices=("all", "localization", "patch"))
+    parser.add_argument("--adaptive-io", action="store_true", default=None)
+    parser.add_argument("--io-device", help="Linux disk name used by the historical adaptive I/O policy")
     parser.add_argument("--instance-id", action="append", default=[])
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--dry-run", "--prepare-only", dest="dry_run", action="store_true",
@@ -40,7 +44,8 @@ def main(argv=None):
         settings = load_settings(args.method, args.config or ROOT / "configs" / (args.method + ".yaml"), {
             k: getattr(args, k) for k in ("model", "instances", "output", "runtime", "api_base", "concurrency", "samples",
                                          "max_steps", "task_timeout", "localization_max_steps", "localization_timeout",
-                                         "docker_host", "locations", "stage")})
+                                         "docker_host", "locations", "stage", "adaptive_io", "io_device")})
+        settings["resume"] = args.resume
         if not settings.get("instances"):
             raise ValueError("Set --instances /path/to/tasks.jsonl or INSTANCES in .env")
         if args.limit < 0:
@@ -56,7 +61,7 @@ def main(argv=None):
             from phoenix.pipeline import load_location
             for task in instances:
                 load_location(settings["locations"], task, settings["model"])
-        plan = dict(settings=settings, tasks=len(instances), instance_ids=[x["instance_id"] for x in instances],
+        plan = dict(recovery_format=1, settings=settings, tasks=len(instances), instance_ids=[x["instance_id"] for x in instances],
                     task_manifest_sha256=fingerprint(instances), model_profile=PROFILES[settings["model"]],
                     review_calls_enabled=False, repair_stage_enabled=False,
                     method_output="P0" if args.method == "our_method" else "final.patch",
@@ -76,23 +81,63 @@ def main(argv=None):
         subprocess.run(["docker", "info", "--format", "{{.ServerVersion}}"], env=env,
                        capture_output=True, check=True, timeout=20)
         output = Path(settings["output"])
-        if output.exists() and any(output.iterdir()):
-            raise ValueError("Output directory is not empty; choose --output for a new run")
+        exists = output.exists() and any(output.iterdir())
+        if exists and not args.resume:
+            raise ValueError("Output directory is not empty; use --resume or choose a new --output")
+        if args.resume and not (output / "plan.json").is_file():
+            raise ValueError("--resume requires a compatible saved run plan")
         output.mkdir(parents=True, exist_ok=True)
         with (output / "controller.lock").open("w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            write_json(output / "plan.json", plan)
-            write_json(output / "instances.json", instances)
+            if args.resume:
+                previous = json.loads((output / "plan.json").read_text())
+                if previous.get("recovery_format") != 1:
+                    raise ValueError("This run predates durable recovery; use a new output directory")
+                immutable = ("model", "method", "api_base", "max_steps", "task_timeout", "samples",
+                             "localization_max_steps", "localization_timeout", "locations", "stage",
+                             "runtime", "docker_host", "container_cpus", "container_memory", "pin_cpus")
+                if (previous.get("task_manifest_sha256") != plan["task_manifest_sha256"] or
+                    any(previous["settings"].get(k) != settings.get(k) for k in immutable)):
+                    raise ValueError("Resume must preserve task inputs, model, method, locations and original budgets")
+                write_json(output / "resume-settings.json", settings)
+            else:
+                write_json(output / "plan.json", plan)
+                write_json(output / "instances.json", instances)
+            if not settings["adaptive_io"]:
+                write_json(output / "resource_policy.json", {"mode": "fixed", "total": settings["concurrency"],
+                    "environment_start_concurrency": settings["environment_start_concurrency"],
+                    "local_command_concurrency": settings["local_command_concurrency"]})
             from phoenix.pipeline import run
-            reports = run(instances, settings, key)
+            previous_term = signal.getsignal(signal.SIGTERM)
+            def interrupted(*_):
+                raise KeyboardInterrupt
+            signal.signal(signal.SIGTERM, interrupted)
+            try:
+                reports = run(instances, settings, key)
+            finally:
+                signal.signal(signal.SIGTERM, previous_term)
             counts = Counter(x["status"] for x in reports)
             write_json(output / "progress.json", {"status": "completed", "counts": dict(counts), "tasks": reports})
             print(json.dumps({"output": str(output), "counts": dict(counts), "review_calls": 0}, ensure_ascii=False))
             return 1 if any(x["status"] not in ("completed", "localized") for x in reports) else 0
+    except KeyboardInterrupt:
+        if "output" in locals():
+            write_json(output / "controller-interrupted.json", {"status": "interrupted",
+                "resume_required": True, "live_workers_preserved": True, "budget_reset": False})
+        print("Interrupted. Use the same command with --resume; existing workers and charged work are preserved.",
+              file=sys.stderr, flush=True)
+        return 130
     except (ValueError, KeyError, OSError, subprocess.SubprocessError) as exc:
         print(f"Configuration/runtime error: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    code = main()
+    if code == 130:
+        # HTTP threads may be waiting on a provider. Their requests are already
+        # durably charged; don't wait for them while owned subprocesses continue.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(code)
+    raise SystemExit(code)

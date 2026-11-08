@@ -1,15 +1,16 @@
 """The original TTS comparison prompt and patch compaction policy."""
 import hashlib
-import json
 from pathlib import Path
 import re
 import time
+import os
 
 import requests
 
 from phoenix.prompts import PromptBuilder
 from phoenix.p0_guidance import SUMMARY_GUIDANCE
 from phoenix.settings import PROFILES, write_json
+from phoenix.run_state import bind, read, digest
 
 def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -85,17 +86,63 @@ def summarize(task, candidates, settings, directory, key, *, shared_budget=False
     if p0:
         payload.update(temperature=0.0, max_tokens=PROFILES[settings["model"]]["max_tokens"])
     timeout = (30, PROFILES[settings["model"]]["timeout"]) if p0 else (240 if kimi else 120)
+    bind(directory / "identity.json", {"payload": payload, "api_base": settings["api_base"],
+                                      "shared_budget": shared_budget})
     write_json(directory / "request.json", payload)
-    attempts, usage = 0, dict(prompt_tokens=0, completion_tokens=0, total_tokens=0)
+    state = read(directory / "state.json") or {
+        "attempts": 0, "format_attempt": 0, "transport_attempt": 0, "phase": "ready",
+        "usage": dict(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+        "usage_applied": [], "unknown_requests": []}
+    receipt = read(directory / "result.json")
+    if receipt.get("status") == "completed":
+        if digest(directory / "summary.txt") != receipt["summary_sha256"]:
+            raise ValueError("Completed summary changed; refusing to regenerate or continue")
+        return (directory / "summary.txt").read_text()
+    if state["phase"] == "failed":
+        raise RuntimeError("Summary exhausted its original bounded attempts; no budget reset on resume")
     transport_limit = 1 if shared_budget else (3 if kimi else 5)
     format_limit = 1 if shared_budget else 3
     session = requests.Session()
     session.trust_env = False
+    def persist():
+        write_json(directory / "state.json", state)
+        write_json(directory / "usage.json", {"api_attempts": state["attempts"], **state["usage"],
+                                            "unknown_requests": state["unknown_requests"]})
+
+    def transport_failure():
+        if state["transport_attempt"] >= transport_limit:
+            if p0 or kimi:
+                state["phase"] = "failed"
+            else:
+                state["format_attempt"] += 1
+                state["transport_attempt"] = 0
+                state["phase"] = "ready" if state["format_attempt"] < format_limit else "failed"
+        else:
+            state["phase"] = "ready"
+        persist()
+
     try:
-        for format_attempt in range(format_limit):
-            response = None
-            for retry in range(transport_limit):
-                attempts += 1
+        while state["format_attempt"] < format_limit and state["phase"] != "failed":
+            response_path = directory / f"response-{state['attempts']}.json"
+            if state["phase"] == "inflight":
+                # A response persisted before a crash is consumed exactly once.
+                # An unknown provider outcome remains charged, never refunded.
+                if response_path.exists():
+                    state["phase"] = "response"
+                else:
+                    state["unknown_requests"].append(state["attempts"])
+                    transport_failure()
+                    continue
+            if state["phase"] == "ready":
+                if p0:
+                    from sweagent.agent.request_pacing import wait_for_request
+                    account = os.environ.get("PHOENIX_ACCOUNT_ID") or "env-" + hashlib.sha256(key.encode()).hexdigest()[:16]
+                    wait_for_request(account, "openai/" + settings["model"], 2)
+                state["attempts"] += 1
+                state["transport_attempt"] += 1
+                state["phase"] = "inflight"
+                persist()  # Charge before transmission, including DNS/timeouts.
+                response_path = directory / f"response-{state['attempts']}.json"
                 try:
                     result = session.post(settings["api_base"].rstrip("/") + "/chat/completions",
                         headers={"Authorization": "Bearer " + key}, json=payload, timeout=timeout)
@@ -104,26 +151,29 @@ def summarize(task, candidates, settings, directory, key, *, shared_budget=False
                     response = result.json()
                     if "data" in response and "response" in response["data"]:
                         response = response["data"]["response"]
-                    write_json(directory / f"response-{attempts}.json", response)
-                    for k in usage:
-                        usage[k] += response.get("usage", {}).get(k, 0) or 0
-                    choice = response["choices"][0]
-                    answer = choice["message"].get("content") or ""
-                    if not isinstance(answer, str):
-                        raise ValueError("Summary content must be text")
-                    break
+                    write_json(response_path, response)
+                    state["phase"] = "response"
+                    persist()
                 except (requests.RequestException, ValueError, RuntimeError, KeyError, IndexError, TypeError, AttributeError) as exc:
-                    write_json(directory / f"transport-error-{attempts}.json", {"error_type": type(exc).__name__, "attempt": attempts})
-                    if retry + 1 == transport_limit:
-                        if p0 or kimi or format_attempt + 1 == format_limit:
-                            raise RuntimeError("Summary request failed after bounded attempts; see stage artifacts") from None
-                        # The historical GLM/Qwen comparator returned empty
-                        # text after its five transport attempts. The adapter
-                        # then proceeded to its next of three bounded rounds.
-                        response = None
-                        break
-                    time.sleep(2)
-            if response is None:
+                    write_json(directory / f"transport-error-{state['attempts']}.json",
+                               {"error_type": type(exc).__name__, "attempt": state["attempts"]})
+                    transport_failure()
+                    if state["phase"] == "ready" and state["transport_attempt"]:
+                        time.sleep(2)
+                    continue
+            try:
+                response = read(response_path)
+                if state["attempts"] not in state["usage_applied"]:
+                    for k in state["usage"]:
+                        state["usage"][k] += response.get("usage", {}).get(k, 0) or 0
+                    state["usage_applied"].append(state["attempts"])
+                    persist()
+                choice = response["choices"][0]
+                answer = choice["message"].get("content") or ""
+                if not isinstance(answer, str):
+                    raise ValueError("Summary content must be text")
+            except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+                transport_failure()
                 continue
             if p0:
                 # The scored P0 run passed any nonempty same-model summary to
@@ -143,9 +193,19 @@ def summarize(task, candidates, settings, directory, key, *, shared_budget=False
                 valid = False
             if valid:
                 (directory / "summary.txt").write_text(answer)
+                write_json(directory / "result.json", {"status": "completed",
+                    "summary_sha256": digest(directory / "summary.txt"), "model": settings["model"],
+                    "api_attempts": state["attempts"], "budget_reset": False})
+                state["phase"] = "completed"
+                persist()
                 return answer
-            (directory / f"invalid-summary-{attempts}.txt").write_text(answer)
-        raise RuntimeError("Summary format validation failed; final generation is blocked")
+            (directory / f"invalid-summary-{state['attempts']}.txt").write_text(answer)
+            state["format_attempt"] += 1
+            state["transport_attempt"] = 0
+            state["phase"] = "ready"
+            persist()
+        state["phase"] = "failed"
+        raise RuntimeError("Summary request/format failed after bounded attempts; final generation is blocked")
     finally:
-        write_json(directory / "usage.json", {"api_attempts": attempts, **usage})
+        persist()
         session.close()

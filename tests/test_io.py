@@ -20,13 +20,28 @@ def test_shell_dry_run_without_credentials_or_docker(tmp_path, task, script):
                DOCKER_HOST="unix:///not-a-daemon", LITELLM_LOCAL_MODEL_COST_MAP="True")
     output = tmp_path / "not-created"
     run = subprocess.run(["bash", str(ROOT / script), "--instances", str(manifest),
-                          "--output", str(output), "--dry-run"], cwd=tmp_path,
+                          "--model", "glm-5.2", "--output", str(output), "--dry-run"], cwd=tmp_path,
                          env=env, capture_output=True, text=True, timeout=30)
     assert run.returncode == 0, run.stderr
     assert "synthetic-private-value" not in run.stdout + run.stderr
     plan = json.loads(run.stdout)
     assert not plan["review_calls_enabled"]
     assert not output.exists()
+
+
+@pytest.mark.parametrize('mode', ['single', 'tts', 'our_method'])
+def test_branch_default_matches_configuration(tmp_path, task, mode):
+    import yaml
+    model = yaml.safe_load((ROOT / 'configs' / (mode + '.yaml')).read_text())['model']
+    manifest = tmp_path / 'input.json'
+    write_json(manifest, [task])
+    result = subprocess.run([sys.executable, '-m', 'phoenix.cli', mode, '--instances', str(manifest), '--dry-run'],
+        cwd=ROOT, env=dict(os.environ, LITELLM_LOCAL_MODEL_COST_MAP='True'), capture_output=True, text=True, timeout=30)
+    if mode == 'our_method' and model == 'kimi-k2.7-code':
+        assert result.returncode == 2 and 'Kimi is available for single/TTS' in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)['settings']['model'] == model
 
 
 @pytest.mark.parametrize("bad_response", [False, True])

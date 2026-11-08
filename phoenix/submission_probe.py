@@ -9,13 +9,9 @@ from pathlib import Path
 
 import re
 
-import signal
-
 import subprocess
 
 import tempfile
-
-import time
 
 def git(root, *args, data=None):
     return subprocess.run(['git', *args], cwd=root, input=data, capture_output=True, timeout=30)
@@ -121,10 +117,52 @@ def normalize_test_submission(root, patch_path):
             'production_diff_sha256': hashlib.sha256(before.stdout).hexdigest(),
             'mechanical_validation': validation, 'model_calls_used': 0}
 
+
+def replay_submission(root, patch_path, clean_tests=True, expected_tree=None):
+    """Replay a preserved patch on the same clean base; never generate code."""
+    root = Path(root)
+    patch = Path(patch_path).read_bytes()
+    if git(root, 'status', '--porcelain').stdout.strip():
+        raise ValueError('Submission replay requires a fresh base checkout')
+    applied = git(root, 'apply', '--index', '--binary', '-', data=patch)
+    if applied.returncode:
+        raise ValueError('Preserved patch does not apply to its base checkout')
+    tree = git(root, 'write-tree').stdout.decode().strip()
+    if expected_tree and tree != expected_tree:
+        raise ValueError('Replayed file content or modes differ from the preserved tree')
+    canonical = git(root, 'diff', '--binary', '--no-ext-diff', 'HEAD')
+    if canonical.returncode or not canonical.stdout.strip():
+        raise ValueError('Replay produced no nonempty canonical patch')
+    # Verify serialization independently in a temporary index, without
+    # resetting the actual checkout or dropping any production modification.
+    with tempfile.TemporaryDirectory(prefix='phoenix-index-') as temp:
+        env = dict(os.environ, GIT_INDEX_FILE=str(Path(temp) / 'index'))
+        def index(*args, data=None):
+            return subprocess.run(['git', *args], cwd=root, env=env, input=data,
+                                  capture_output=True, check=True, timeout=60).stdout
+        index('read-tree', 'HEAD')
+        index('apply', '--cached', '--binary', '-', data=canonical.stdout)
+        if index('write-tree').decode().strip() != tree:
+            raise ValueError('Canonical patch changed replayed file content or modes')
+    canonical_path = Path(patch_path).with_suffix('.canonical.patch')
+    canonical_path.write_bytes(canonical.stdout)
+    result = {'patch': canonical.stdout.decode(), 'model_calls_used': 0,
+              'original_patch_sha256': hashlib.sha256(patch).hexdigest(),
+              'replayed_tree': tree, 'file_content_and_modes_identical': True,
+              'diff_serialization_changed': canonical.stdout != patch}
+    check = inspect_patch(root, canonical_path)
+    if clean_tests and check['forbidden_test_paths']:
+        result.update(normalize_test_submission(root, canonical_path))
+    else:
+        result['mechanical_validation'] = check
+    if clean_tests and not result['mechanical_validation']['valid']:
+        raise ValueError('Preserved P0 patch still fails mechanical validation')
+    return result
+
 if __name__ == "__main__":
     import sys
     request = json.loads(sys.argv[1])
     operation = request.pop("operation")
-    if operation not in ("inspect_patch", "normalize_test_submission"):
+    if operation not in ("inspect_patch", "normalize_test_submission", "replay_submission"):
         raise ValueError("Unsupported submission operation")
     print(json.dumps(globals()[operation](**request)))

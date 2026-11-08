@@ -9,6 +9,12 @@ from swerex.deployment.docker import DockerDeployment
 class ReliableDockerDeployment(DockerDeployment):
     _verified_start = False
 
+    def __del__(self):
+        # A managed host controller must capture the checkout after worker
+        # exit, including exceptions and deadline shutdown. It owns cleanup.
+        if not getattr(self, '_controller_managed', False):
+            super().__del__()
+
     def _available_process_output(self, limit=16384):
         """Read only buffered bytes, never wait for EOF from a live Docker CLI."""
         process = self._container_process

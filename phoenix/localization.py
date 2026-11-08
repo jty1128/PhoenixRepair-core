@@ -4,19 +4,14 @@ The host issues model requests. Read-only tools see only tracked files exported
 from each official image's verified base checkout. There is no patch/test tool.
 Account concurrency is bounded across requests/retries, not just HTTP calls.
 """
-import argparse
-import concurrent.futures
 import hashlib
-import io
 import json
-import os
 from pathlib import Path
 import re
 import runpy
 import shutil
 import subprocess
 import tarfile
-import threading
 import time
 import uuid
 
@@ -27,6 +22,7 @@ from jinja2 import Template
 from phoenix.localization_workflow import LocalizationWorkflow, MARKER
 from sweagent.agent.context_compaction import compact_tool_outputs
 from phoenix.localization_recovery import request_schema, recovery_message, compact_rejected_turns
+from phoenix.run_state import bind, read, digest, lock
 
 ROOT = Path(__file__).resolve().parents[1]
 LIB = runpy.run_path(str(ROOT / 'tools/location_workflow/bin/location_lib.py'))
@@ -49,6 +45,29 @@ def source_ready(cache, instance):
 
 
 def export_source(cache, instance):
+    cache = Path(cache)
+    with lock(cache / (source_key(instance) + '.lock')):
+        ledger = cache / (source_key(instance) + '.attempts.json')
+        state = read(ledger) or {'attempts': 0}
+        if source_ready(cache, instance):
+            return _export_source(cache, instance)
+        while state['attempts'] < 3:
+            state['attempts'] += 1
+            write(ledger, state)
+            try:
+                result = _export_source(cache, instance)
+                state['status'] = 'completed'
+                write(ledger, state)
+                return result
+            except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+                state.update(status='retry_wait', error_type=type(exc).__name__)
+                write(ledger, state)
+                if state['attempts'] < 3:
+                    time.sleep(2 ** state['attempts'])
+        raise RuntimeError('Source export exhausted three infrastructure attempts; no model was queried')
+
+
+def _export_source(cache, instance):
     """Export tracked checkout files, not git history, image tests or solutions."""
     dest = cache / source_key(instance)
     if source_ready(cache, instance):
@@ -61,6 +80,8 @@ def export_source(cache, instance):
     name = 'phoenix-source-' + uuid.uuid4().hex[:16]
     archive = work / 'source.tar'
     try:
+        image_id = subprocess.run(['docker', 'image', 'inspect', instance['image_name'], '--format', '{{.Id}}'],
+                                  check=True, capture_output=True, text=True, timeout=20).stdout.strip()
         # git ls-files selects the checked-out tree, including tracked tests;
         # tar does not apply export-ignore/export-subst attributes.
         script = ('set -eu; cd "$1"; test "$(git rev-parse HEAD)" = "$2"; '
@@ -70,7 +91,7 @@ def export_source(cache, instance):
                 '-e', 'GIT_CONFIG_COUNT=1', '-e', 'GIT_CONFIG_KEY_0=safe.directory',
                 '-e', 'GIT_CONFIG_VALUE_0=/' + instance['repo_name'],
                 '--label', 'phoenixrepair.purpose=source-only-localization',
-                '--entrypoint', '/bin/sh', instance['image_name'], '-c', script,
+                '--entrypoint', '/bin/sh', image_id, '-c', script,
                 'export', '/' + instance['repo_name'].strip('/'), instance['base_commit']]
         with archive.open('wb') as stream:
             result = subprocess.run(args, stdout=stream, stderr=subprocess.PIPE, timeout=600)
@@ -97,7 +118,7 @@ def export_source(cache, instance):
                     target.chmod(0o444)
                     count += 1
         archive.unlink()
-        write(work / 'source.json', {'image': instance['image_name'], 'base_commit': instance['base_commit'],
+        write(work / 'source.json', {'image': instance['image_name'], 'image_id': image_id, 'base_commit': instance['base_commit'],
               'tracked_archive_sha256': digest, 'files': count, 'network': 'none',
               'reference_or_verifier_material_mounted': False})
         work.rename(dest)
@@ -130,11 +151,20 @@ def definitions(config, names):
 
 
 def call_api(session, endpoint, key, payload, task, *, timeout=600, deadline=None):
-    for attempt in range(5):
+    # The caller gives each logical turn its own request journal. Persist an
+    # attempt before transmitting so process interruption cannot reset five.
+    bind(task / 'request-identity.json', {'endpoint': endpoint, 'payload': payload})
+    cached = task / 'response.json'
+    if cached.exists():
+        return read(cached)
+    state = read(task / 'transport.json') or {'attempts': 0}
+    for attempt in range(state['attempts'], 5):
         try:
             remaining = deadline - time.monotonic() if deadline else timeout
             if remaining <= 0:
                 raise RuntimeError('Localization wall-time limit reached')
+            state.update(attempts=attempt + 1, in_flight=True)
+            write(task / 'transport.json', state)
             response = session.post(endpoint.rstrip('/') + '/chat/completions',
                 headers={'Authorization': 'Bearer ' + key}, json=payload,
                 timeout=(min(30, remaining), min(timeout, remaining)))
@@ -150,19 +180,43 @@ def call_api(session, endpoint, key, payload, task, *, timeout=600, deadline=Non
             if not response.ok:
                 # Server error messages may echo request metadata; never log headers/keys.
                 raise RuntimeError(f'Model API HTTP {response.status_code}')
-            return response.json()
+            result = response.json()
+            write(cached, result)
+            state['in_flight'] = False
+            write(task / 'transport.json', state)
+            return result
         except (requests.ConnectionError, requests.Timeout):
             if attempt == 4:
                 raise
             time.sleep(min(30, 2 ** (attempt + 1)))
+    raise RuntimeError('Localization transport attempts exhausted; budget cannot reset on resume')
 
 
 def run_task(instance, source, output, profile, key, config, endpoint):
+    task = output / profile['model'] / instance['instance_id']
+    with lock(task / 'stage.lock', blocking=False):
+        bind(task / 'identity.json', dict(instance=instance, model=profile['model'],
+             config=config, endpoint=endpoint, source=read(source / 'source.json')))
+        previous = read(task / 'report.json')
+        receipt = read(task / 'result.json')
+        if receipt.get('status') == 'localized':
+            if digest(task / 'location_candidates.json') != receipt['candidates_sha256']:
+                raise ValueError('Completed localization changed; refusing regeneration')
+            return previous
+        if previous.get('status') == 'failed':
+            return previous
+        return _run_task(instance, source, output, profile, key, config, endpoint)
+
+
+def _run_task(instance, source, output, profile, key, config, endpoint):
     task = output / profile['model'] / instance['instance_id']
     task.mkdir(parents=True, exist_ok=True)
     status = {'instance_id': instance['instance_id'], 'model': profile['model'], 'account': profile['account'],
               'status': 'running', 'started_at': time.time(), 'steps': 0,
               'patch_generation_run': False, 'tests_run': False}
+    checkpoint = read(task / 'checkpoint.json')
+    if checkpoint:
+        status = checkpoint['status']
     write(task / 'report.json', status)
     artifacts = task / 'artifacts'
     artifacts.mkdir(exist_ok=True)
@@ -176,19 +230,46 @@ def run_task(instance, source, output, profile, key, config, endpoint):
     transcript = task / 'trajectory.jsonl'
     limit = config['agent']['max_steps']
     runtime = config['localization_runtime']
-    deadline = time.monotonic() + runtime['task_timeout'] if runtime['task_timeout'] else None
+    deadline = (time.monotonic() + runtime['task_timeout'] - (time.time() - status['started_at'])
+                if runtime['task_timeout'] else None)
     session = requests.Session()
     # No environment proxy/credential fallback to unrelated services.
     session.trust_env = False
     last_action, repeated = None, 0
     last_rejection = None
     rejected_ids = set()
+    start_step = 1
+    if checkpoint:
+        messages, usage = checkpoint['messages'], checkpoint['usage']
+        controller.__dict__.update(checkpoint['controller'])
+        controller.seen_outputs = set(controller.seen_outputs)
+        store.write(checkpoint['analysis'])
+        last_action, repeated = checkpoint['last_action'], checkpoint['repeated']
+        last_rejection, rejected_ids = checkpoint['last_rejection'], set(checkpoint['rejected_ids'])
+        start_step = checkpoint['step'] + 1
+        # Per-turn files are authoritative. Remove only an incomplete append
+        # from the human-readable concatenation after a crash.
+        transcript.write_text(''.join(json.dumps(read(task / 'steps' / f'{i:03d}.json'),
+            ensure_ascii=False) + '\n' for i in range(1, start_step)))
+        if checkpoint.get('final') is not None:
+            write(task / 'location_candidates.json', checkpoint['final'])
+            write(task / 'result.json', {'status': 'localized',
+                  'candidates_sha256': digest(task / 'location_candidates.json')})
+            session.close()
+            return status
+    def save(step, final=None):
+        write(task / 'checkpoint.json', dict(step=step, status=status, messages=messages,
+            usage=usage, controller={**vars(controller), 'seen_outputs': sorted(controller.seen_outputs)},
+            analysis=store.load(), last_action=last_action, repeated=repeated,
+            last_rejection=last_rejection, rejected_ids=sorted(rejected_ids), final=final))
+    if not checkpoint:
+        save(0)
     try:
         import tiktoken
         encoder = tiktoken.get_encoding('cl100k_base')
         def tokens(ms):
             return sum(len(encoder.encode(json.dumps(m, ensure_ascii=False), disallowed_special=())) + 6 for m in ms)
-        for step in range(1, limit + 1):
+        for step in range(start_step, limit + 1):
             if deadline is not None and time.monotonic() >= deadline:
                 raise RuntimeError('Localization wall-time limit reached; drafts retained')
             control = controller.control(step, limit)
@@ -213,8 +294,14 @@ def run_task(instance, source, output, profile, key, config, endpoint):
                            tools=definitions(config, control['allowed_tools']), tool_choice=choice,
                            parallel_tool_calls=False, temperature=0.0, top_p=1.0,
                            max_tokens=runtime['max_tokens'], enable_thinking=runtime['enable_thinking'])
-            response = call_api(session, endpoint, key, payload, task,
-                                timeout=runtime['api_timeout'], deadline=deadline)
+            request_dir = task / 'requests' / f'{step:03d}'
+            cached_response = request_dir / 'response.json'
+            if cached_response.exists():
+                response = read(cached_response)
+            else:
+                response = call_api(session, endpoint, key, payload, request_dir,
+                                    timeout=runtime['api_timeout'], deadline=deadline)
+                write(cached_response, response)
             usage['api_calls'] += 1
             for k in ('prompt_tokens', 'completion_tokens', 'total_tokens'):
                 usage[k] += response.get('usage', {}).get(k, 0) or 0
@@ -260,9 +347,10 @@ def run_task(instance, source, output, profile, key, config, endpoint):
                 if not event.get('ok'):
                     rejected_ids.add(call['id'])
                 messages.append({'role': 'tool', 'tool_call_id': call['id'], 'content': observation + '\n' + MARKER + json.dumps(event)})
+            record = {'step': step, 'control': control, 'response': response, 'observations': observations}
+            write(task / 'steps' / f'{step:03d}.json', record)
             with transcript.open('a') as stream:
-                stream.write(json.dumps({'step': step, 'control': control, 'response': response,
-                                         'observations': observations}, ensure_ascii=False) + '\n')
+                stream.write(json.dumps(record, ensure_ascii=False) + '\n')
             last_rejection = '\n'.join(o['observation'] for o in observations if not o['event'].get('ok')) or None
             status.update(steps=step, updated_at=time.time(), usage=usage, candidate_count=controller.candidate_count)
             write(task / 'report.json', status)
@@ -272,7 +360,11 @@ def run_task(instance, source, output, profile, key, config, endpoint):
                 status.update(status='localized', candidates=len(final['candidates']),
                               exploration_outcome=final['exploration_outcome'],
                               unfinished_hypotheses=final['unfinished_hypotheses'])
+                save(step, final)
+                write(task / 'result.json', {'status': 'localized',
+                      'candidates_sha256': digest(task / 'location_candidates.json')})
                 break
+            save(step)
             if event.get('aborted'):
                 status.update(status='failed', error='Model aborted: no complete candidate')
                 break

@@ -33,6 +33,7 @@ def candidate():
 @pytest.fixture
 def settings(tmp_path):
     from phoenix.settings import ROOT, load_settings
-    result = load_settings("our_method", ROOT / "configs/our_method.yaml", {})
+    # Synthetic P0 fixtures are independent of the checked-out model branch.
+    result = load_settings("our_method", ROOT / "configs/our_method.yaml", {"model": "glm-5.2"})
     result.update(output=str(tmp_path / "output"), runtime=str(tmp_path / "runtime"))
     return result

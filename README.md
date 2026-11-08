@@ -163,7 +163,32 @@ bash our_method.sh --stage patch --locations runs/qwen-location/localization \
 
 可用 `--limit 6` 小批量验证；`--instance-id ID` 可重复指定；`--concurrency 4` 控制同时处理的题目数量。所有阶段在同一题内有序执行。`--help` 查看完整参数。
 
-每次运行使用新输出目录，避免覆盖已有结果或悄悄重置失败任务的预算。失败会保留日志并返回非零退出码；不会无限重试。输出 patch 不代表通过官方评测，本仓库不自动评测。
+新实验使用新输出目录。中断后使用原命令加 `--resume`：核对原输入、模型、方法和预算，接管本次运行的 worker，复用哈希校验通过的已完成阶段。已经耗尽恢复次数的阶段仍返回失败，不会通过重启获得新预算。输出 patch 不代表通过官方评测，本仓库不自动评测。
+
+```bash
+bash run_tts.sh --model qwen3.7-plus --output runs/qwen-tts --resume
+bash our_method.sh --model qwen3.7-plus --output runs/qwen-p0 --resume
+
+# 可选：按实验磁盘的持续 I/O 压力调整准入；设备名需替换成本机实际设备。
+bash our_method.sh --model glm-5.2 --output runs/glm-p0 \
+  --concurrency 12 --adaptive-io --io-device YOUR_BLOCK_DEVICE
+```
+
+## 模型分支与恢复
+
+共享实现维护在 `main`；以下 Git 分支分别设置模型默认值，保留同一套方法代码和恢复测试：
+
+| 分支 | 默认模型 | 对应方法与历史通过数 |
+| --- | --- | --- |
+| [`reproduce/glm-5.2`](https://github.com/jty1128/PhoenixRepair-core/tree/reproduce/glm-5.2) | GLM-5.2 | TTS Final 33/51；P0 32/51 |
+| [`reproduce/qwen3.7-plus`](https://github.com/jty1128/PhoenixRepair-core/tree/reproduce/qwen3.7-plus) | Qwen-3.7 Plus | TTS Final 17/51；P0 21/51 |
+| [`reproduce/kimi-k2.7-code`](https://github.com/jty1128/PhoenixRepair-core/tree/reproduce/kimi-k2.7-code) | Kimi K2.7 Code | 支持 single/TTS；没有本表对应的 P0 设定或成绩 |
+
+`phoenix/recovery_profiles.py` 明确记录模型差异。GLM/Qwen 的 Single/TTS 在 7,140 秒停止生成，预留 60 秒提取当前补丁；Kimi 保留完整 3,000 秒生成时限，之后另用最多 60 秒提取。Kimi 保留 thinking/reasoning 回传。各模型的请求超时、输出上限和 summary 重试规则见下表及后文，不会在恢复时替换模型。
+
+已移植镜像检查与固定 digest、环境启动重试、运行时兼容修复、命令/启动 I/O 闸门、可选自适应准入、超时补丁提取、轨迹续跑、跨容器提交重放和测试文件清理。提交重放只验证原补丁的文件内容与权限；没有新增模型审核、P1 或按题目定制的修复逻辑。
+
+**TTS 与 P0 的预算单位不同，但都不因恢复重置。** TTS 的每个 sample/final 各自有原来的 200 步，summary 另有有界次数；P0 的候选、summary 和 final 共用原 author 配额，单候选仍最多 160 次。比如 P0 已用 100 次，恢复后只剩 60 次，而不是再给 160 次。已经发出但结果未知的调用仍计入消耗；重放/校验本身不调用模型。[完整恢复规则和验证方式](docs/recovery.md)。
 
 ## P0 的准确含义
 
@@ -196,7 +221,7 @@ bash our_method.sh --stage patch --locations runs/qwen-location/localization \
 
 TTS summary 使用同一个模型，temperature=0.7、top_p=1。GLM/Qwen 输出上限为 8,192、请求超时为 120 秒；每轮最多 5 次传输尝试，格式不合格或传输耗尽后最多进行 3 轮，总上限为 15 次请求。GLM/Qwen 沿用历史格式校验：接受普通或加粗标题，以及带方括号的样本序号；必须包含 `BEST_SAMPLE`、`REASONING:`、`INSIGHTS FOR NEXT ATTEMPT:`，且总结至少 100 字符。Kimi 输出上限为 32,768、超时为 240 秒；每轮最多 3 次传输尝试，耗尽即停止；格式不合格最多 3 轮，并拒绝截断的 summary。
 
-P0 多候选 summary 使用历史 P0 专用设置：同模型、temperature=0、top_p=1；GLM 输出上限 8,192、读取超时 240 秒，Qwen 为 32,768、600 秒，连接超时均为 30 秒。受共享预算限制只调用一次，读取完整候选 diff，并追加“对照原始 issue、保留不确定性、避免合并不兼容方案”的原始提示。历史流程将非空 summary 交给 final，不使用 TTS 的额外格式门槛；单候选不经过 summary。
+P0 多候选 summary 使用历史 P0 专用设置：同模型、temperature=0、top_p=1；GLM 输出上限 8,192、读取超时 240 秒，Qwen 为 32,768、600 秒，连接超时均为 30 秒。受共享预算限制只调用一次，读取完整候选 diff，并追加“对照原始 issue、保留不确定性、避免合并不兼容方案”的原始提示。已接入与 author 共用的账户/模型请求间隔控制，最短间隔 2 秒。历史流程将非空 summary 交给 final，不使用 TTS 的额外格式门槛；单候选不经过 summary。
 
 GLM/Qwen 支持三个入口；Kimi 支持 single/TTS。模型支持情况取决于你的服务商账号，不会用另一模型自动替代。
 
@@ -206,6 +231,7 @@ GLM/Qwen 支持三个入口；Kimi 支持 single/TTS。模型支持情况取决�
 - `<model>/<instance_id>/report.json`：生成状态、步骤与调用数。
 - `<model>/<instance_id>/final.patch`：最终生成补丁；我们的方法另存同内容的 `P0.patch`。
 - 各阶段目录保留配置、日志、轨迹、候选与 summary，便于审计。
+- `attempts/`、`execution.json`：原始尝试、恢复原因、累计预算及执行时限；`result.json` 保存已完成补丁哈希。恢复保留原稿，不覆盖为一次新生成。
 - `api-usage.sqlite3`：框架取得的原始 API 用量账本。旧 `model_stats.tokens_received` 可能不含工具调用参数，不能作为完整计费用量。
 
 运行输出、数据和密钥全部由 `.gitignore` 排除。维护时只提交代码、配置模板和合成单元测试。
@@ -226,12 +252,12 @@ TTS 的运行实现仍有明确差异：公开版保留了提交工具的超时�
 
 2026-11-08 的进一步核对基于公开提交 `13f54e7`（方法代码与 `8f35b56` 相同），直接从 Git 提取已上传文件运行测试，没有混入本地未提交代码。定位的 15 个依赖文件与生成冻结定位时的快照逐字一致；历史定位快照的 262 个文件和 P0 快照的 307 个文件也均通过各自保存的哈希清单校验。
 
-完整实验执行尚有以下复现边界：
+此次恢复移植后，完整实验仍有以下复现边界：
 
 - **定位输入**：表中 P0 使用固定的 102 份历史定位，`our_method.sh` 默认重新定位。对应原输入的运行需要通过 `--locations` 提供同模型冻结定位；这些私有产物没有上传。
-- **总时限处理**：历史 GLM/Qwen Single/TTS 启动器在 7,140 秒停止 agent，并预留 60 秒提取当前补丁；公开版在 7,200 秒终止进程并标记失败，尚未移植该保底提取流程。已核对的 408 条历史轨迹没有触发这个分支，但未来超时任务的行为不同。
-- **异常恢复和调度**：历史控制器包含环境启动重试、资源准入、I/O 调度及中断后的提交恢复；公开入口使用固定并发并保留失败产物，没有完整移植这些控制器。历史 P0 的 11 个恢复检查点已用于追溯原生成配置；公开版包含正常提交时的测试文件清理，不包含这套跨进程恢复调度。
-- **运行环境**：历史 P0 固定了本机镜像 digest、CPU 亲和性和网络代理；公开版使用用户提供的镜像与运行时。严格复现还需固定相同镜像、依赖和网络条件。P0 的 summary 请求内容相同，但公开 summary 未接入历史共享请求间隔控制。
+- **异常路径的明确改进**：恢复控制器已移植并增加持久化日志，跨进程恢复不会重置已用预算。Kimi 的超时提取改为先禁止新操作并停止容器命令，再读取 diff，避免边改边提取；这不是历史启动器的逐字复制。P0 仍停在首次有效提交，不执行历史控制器中后续的监督/P1 阶段。
+- **运行环境**：运行开始会固定用户提供镜像的实际 digest；支持 `pin_cpus` 和通过环境变量 `PHOENIX_CONTAINER_PROXY` 配置容器代理。严格复现仍需用户提供相同镜像、依赖和网络条件，仓库不携带私有服务器配置。
+- **分数验证**：已重新核对 GLM/Qwen 的 408 个 TTS 生成阶段、102 份 TTS summary、115 个 P0 阶段、6 份 P0 summary，以及 102 份原定位/评分补丁。正常路径的提示词、模型参数和调用配额对应；故障恢复通过离线注入和真实 Docker 回放验证。这些检查没有重新请求付费模型或进行全量评分，不能据此保证新生成的数值完全等于历史成绩。
 
 分数来源按题目、模型及补丁 SHA256 关联：Single/TTS 八组各 51 题均能关联到历史评测，计数与表中一致；其中每组同一题的主评测记录不在本地备份中，使用了补丁哈希一致的旧基础设施尝试归档。因此这些分数是可追溯的历史记录，并非本次重新完成的完整评测。P0 的 102 份评分输入则全部匹配对应的 P0 评测记录。
 

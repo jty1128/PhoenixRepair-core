@@ -1,22 +1,17 @@
 """Small bounded schedulers for single sampling, TTS, and the P0 method."""
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import copy
-import hashlib
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 import json
 import os
 from pathlib import Path
-import signal
-import socket
-import subprocess
-import sys
 import threading
 import time
-import uuid
 
-from phoenix.settings import ROOT, fingerprint, localization_config, write_json
+from phoenix.settings import localization_config, write_json
 from phoenix.summary import summarize
+from phoenix.run_state import bind, digest
+from phoenix.backend import DockerBackend, ControllerInterrupted
 
 
 def task_jobs(method, samples=3, candidates=1, max_calls=200):
@@ -38,99 +33,6 @@ def task_jobs(method, samples=3, candidates=1, max_calls=200):
                  allowance=candidate_pool // candidates + (i < candidate_pool % candidates)) for i in range(candidates)] + [
         dict(stage="summary", kind="summary", final=False),
         dict(stage="final", kind="final", final=True, allowance=max_calls - candidate_pool - 1 - 40)]
-
-
-class DockerBackend:
-    def __init__(self, settings, key):
-        from phoenix.runtime import validate
-        from phoenix.worker import prepare_tools
-        self.settings, self.key = settings, key
-        validate(settings["runtime"])
-        self.output = Path(settings["output"])
-        self.output.mkdir(parents=True, exist_ok=True)
-        self.base = prepare_tools(self.output)["agent"]
-        self.run_id = uuid.uuid4().hex
-        self.port_lock, self.ports = threading.Lock(), set()
-        self.env = dict(os.environ, PHOENIX_API_KEY=key, LITELLM_LOCAL_MODEL_COST_MAP="True",
-                        PHOENIX_API_USAGE_DB=str(self.output / "api-usage.sqlite3"))
-        # P0's shared request pacing needs an account identifier. A standalone
-        # checkout has no server-specific account map; use a stable opaque ID.
-        self.env["PHOENIX_ACCOUNT_ID"] = os.environ.get("PHOENIX_ACCOUNT_ID") or (
-            "env-" + hashlib.sha256(key.encode()).hexdigest()[:16])
-        if settings.get("docker_host"):
-            self.env["DOCKER_HOST"] = settings["docker_host"]
-
-    def allocate_port(self):
-        with self.port_lock:
-            for _ in range(100):
-                with socket.socket() as s:
-                    s.bind(("127.0.0.1", 0))
-                    port = s.getsockname()[1]
-                if port not in self.ports:
-                    self.ports.add(port)
-                    return port
-        raise RuntimeError("Unable to allocate a unique worker port")
-
-    def generate(self, task, stage, *, allowance, final_stage, candidate=None, summary=None, num_candidates=0):
-        stage.mkdir(parents=True, exist_ok=True)
-        job_id = fingerprint([task["instance_id"], str(stage)])[:24]
-        request = dict(task=task, settings=self.settings, stage_dir=str(stage), base_agent=self.base,
-                       run_id=self.run_id, job_id=job_id, port=self.allocate_port(), candidate=candidate,
-                       summary=summary, num_candidates=num_candidates,
-                       generation_allowance=allowance, final_stage=final_stage)
-        write_json(stage / "worker-request.json", request)
-        returncode, timed_out = None, False
-        process = None
-        try:
-            with (stage / "generation.log").open("w") as log:
-                process = subprocess.Popen([sys.executable, "-m", "phoenix.worker", str(stage / "worker-request.json")],
-                    cwd=ROOT, env=self.env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-                try:
-                    returncode = process.wait(timeout=self.settings["task_timeout"])
-                except subprocess.TimeoutExpired:
-                    timed_out = True
-                    os.killpg(process.pid, signal.SIGTERM)
-                    try:
-                        process.wait(timeout=10)
-                    except subprocess.TimeoutExpired:
-                        os.killpg(process.pid, signal.SIGKILL)
-                        process.wait(timeout=10)
-        finally:
-            if process is not None and process.poll() is None:
-                os.killpg(process.pid, signal.SIGTERM)
-                try:
-                    process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    process.wait(timeout=10)
-            self.cleanup(job_id)
-        traj = stage / "generate/author/author.traj"
-        data = json.loads(traj.read_text()) if traj.exists() else {}
-        info = data.get("info", {})
-        patch = info.get("submission") or ""
-        if self.settings["method"] == "our_method" and (stage / "P0.patch").exists():
-            patch = (stage / "P0.patch").read_text()
-        (stage / "final.patch").write_text(patch)
-        budget = stage / "author_budget.json"
-        calls = json.loads(budget.read_text())["attempted_calls"] if budget.exists() else info.get("model_stats", {}).get("api_calls", 0)
-        result = dict(status="completed" if patch.strip() and not timed_out and (returncode == 0 or info.get("exit_status") == "submitted") else "failed",
-                      patch=str(stage / "final.patch"), patch_sha256=hashlib.sha256(patch.encode()).hexdigest(),
-                      steps=len(data.get("trajectory", [])), model_calls=calls, exit_status=info.get("exit_status"),
-                      returncode=returncode, timed_out=timed_out, model_stats=info.get("model_stats", {}),
-                      review_calls=0, repair_calls=0, benchmark_evaluated=False)
-        write_json(stage / "result.json", result)
-        if result["status"] != "completed":
-            raise RuntimeError("Generation failed or produced no patch: " + str(stage / "generation.log"))
-        return result
-
-    def cleanup(self, job_id):
-        try:
-            result = subprocess.run(["docker", "ps", "-aq", "--filter", "label=phoenixrepair.run=" + self.run_id,
-                "--filter", "label=phoenixrepair.job=" + job_id], env=self.env, capture_output=True, text=True, timeout=30, check=True)
-            if result.stdout.split():
-                subprocess.run(["docker", "rm", "-f", *result.stdout.split()], env=self.env, capture_output=True, timeout=45, check=True)
-        except (subprocess.SubprocessError, OSError) as exc:
-            print("Container cleanup failed for owned job " + job_id + ": " + type(exc).__name__, flush=True)
 
 
 def load_location(root, task, model):
@@ -172,6 +74,8 @@ def run_task(task, settings, backend, key, candidates=None, summary_fn=summarize
     write_json(directory / "instance.json", task)
     method = settings["method"]
     jobs = task_jobs(method, settings["samples"], len(candidates or []) if method == "our_method" else 1, settings["max_steps"])
+    bind(directory / "task-identity.json", dict(task=task, jobs=jobs, candidates=candidates,
+                                               model=settings["model"], method=method))
     write_json(directory / "plan.json", jobs)
     results, summary, used = [], None, 0
     try:
@@ -192,6 +96,11 @@ def run_task(task, settings, backend, key, candidates=None, summary_fn=summarize
                 candidate=candidate, summary=summary if job["kind"] == "final" else None,
                 num_candidates=len(results))
             results.append(result)
+            # Test/custom backends also receive the same immutable stage receipt.
+            if not result.get("patch_sha256"):
+                result["patch_sha256"] = digest(Path(result["patch"]))
+            result.setdefault("status", "completed")
+            write_json(stage / "result.json", result)
             used += result["model_calls"]
         final = results[-1]
         patch = Path(final["patch"]).read_bytes()
@@ -202,6 +111,9 @@ def run_task(task, settings, backend, key, candidates=None, summary_fn=summarize
             method=method, patch=str(directory / "final.patch"), model_calls=used,
             review_calls=0, repair_calls=0, output_stage="P0" if method == "our_method" else "final",
             benchmark_evaluated=False, stages=results)
+    except ControllerInterrupted as exc:
+        report = dict(status="interrupted", model=settings["model"], instance_id=task["instance_id"],
+            error=str(exc), stages=results, review_calls=0, repair_calls=0)
     except Exception as exc:
         report = dict(status="failed", model=settings["model"], instance_id=task["instance_id"],
             error=type(exc).__name__ + ": " + str(exc), stages=results, review_calls=0, repair_calls=0)
@@ -209,14 +121,51 @@ def run_task(task, settings, backend, key, candidates=None, summary_fn=summarize
     return report
 
 
-def parallel(items, fn, workers):
+def parallel(items, fn, workers, settings=None, stop_event=None):
     results = []
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(fn, item): item for item in items}
-        for future in as_completed(futures):
-            result = future.result()
-            results.append(result)
-            print(f"[{len(results)}/{len(items)}] {result.get('instance_id', '?')}: {result['status']}", flush=True)
+    pool = ThreadPoolExecutor(max_workers=workers)
+    pending = iter(items)
+    active, exhausted = {}, False
+    sampler = policy = None
+    if settings and settings.get("adaptive_io"):
+        from phoenix.adaptive_io import IOSampler, AdmissionPolicy
+        sampler = IOSampler(settings["io_device"])
+        policy = AdmissionPolicy(initial=workers, maximum=workers, minimum=min(4, workers))
+    try:
+        while active or not exhausted:
+            limit = workers
+            if sampler:
+                state = policy.update(sampler.sample(), time.monotonic(), len(active))
+                state["environment_start_concurrency"] = min(state["environment_start_concurrency"],
+                                                           settings["environment_start_concurrency"])
+                state["local_command_concurrency"] = min(state["local_command_concurrency"],
+                                                       settings["local_command_concurrency"])
+                write_json(Path(settings["output"]) / "resource_policy.json", state)
+                limit = state["total"]
+            while not exhausted and len(active) < limit and not (stop_event and stop_event.is_set()):
+                try:
+                    item = next(pending)
+                except StopIteration:
+                    exhausted = True
+                    break
+                active[pool.submit(fn, item)] = item
+            if stop_event and stop_event.is_set():
+                exhausted = True
+            if not active:
+                break
+            done, _ = wait(active, timeout=1, return_when=FIRST_COMPLETED)
+            for future in done:
+                active.pop(future)
+                result = future.result()
+                results.append(result)
+                print(f"[{len(results)}/{len(items)}] {result.get('instance_id', '?')}: {result['status']}", flush=True)
+    except BaseException:
+        if stop_event:
+            stop_event.set()
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
+    else:
+        pool.shutdown(wait=True)
     return results
 
 
@@ -242,10 +191,10 @@ def run(instances, settings, key):
                 return localization.run_task(task, source, Path(locations), profile, key,
                                              localization_config(settings), settings["api_base"])
             except Exception as exc:
-                result = dict(status="failed", instance_id=task["instance_id"], error=type(exc).__name__ + ": " + str(exc))
+                result = dict(status="infrastructure_failed", instance_id=task["instance_id"], error=type(exc).__name__ + ": " + str(exc))
                 write_json(Path(locations) / settings["model"] / task["instance_id"] / "report.json", result)
                 return result
-        localized = parallel(instances, locate, settings["concurrency"])
+        localized = parallel(instances, locate, settings["concurrency"], settings)
         failures = [x for x in localized if x["status"] != "localized"]
         succeeded = {x["instance_id"] for x in localized if x["status"] == "localized"}
         ready = [x for x in instances if x["instance_id"] in succeeded]
@@ -267,4 +216,5 @@ def run(instances, settings, key):
             result = dict(status="failed", instance_id=task["instance_id"], error=type(exc).__name__ + ": " + str(exc))
             write_json(output / settings["model"] / task["instance_id"] / "report.json", result)
             return result
-    return failures + parallel(ready, solve, settings["concurrency"])
+    return failures + parallel(ready, solve, settings["concurrency"], settings,
+                               getattr(backend, "stop_event", None))

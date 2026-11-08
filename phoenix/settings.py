@@ -5,6 +5,7 @@ import copy
 import hashlib
 import json
 import os
+import uuid
 from pathlib import Path
 
 import yaml
@@ -21,7 +22,7 @@ PROFILES = {
 
 def write_json(path: Path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
+    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
     temporary.replace(path)
 
@@ -85,7 +86,9 @@ def load_settings(mode, config_path, overrides):
     data = yaml.safe_load(config_path.read_text()) or {}
     allowed = {"model", "instances", "output", "runtime", "api_base", "concurrency", "samples", "max_steps",
                "task_timeout", "locations", "stage", "docker_host", "container_cpus", "container_memory",
-               "localization_max_steps", "localization_timeout"}
+               "localization_max_steps", "localization_timeout", "adaptive_io", "io_device",
+               "environment_start_concurrency", "local_command_concurrency", "pin_cpus",
+               "submission_recovery_timeout"}
     if set(data) - allowed:
         raise ValueError("Unknown configuration fields: " + ", ".join(sorted(set(data) - allowed)))
     data.update({k: v for k, v in overrides.items() if v is not None})
@@ -107,6 +110,12 @@ def load_settings(mode, config_path, overrides):
     data.setdefault("stage", "all")
     data.setdefault("container_cpus", 2)
     data.setdefault("container_memory", "6g")
+    data.setdefault("adaptive_io", False)
+    data.setdefault("io_device", None)
+    data.setdefault("pin_cpus", False)
+    data.setdefault("environment_start_concurrency", 2)
+    data.setdefault("local_command_concurrency", 4)
+    data.setdefault("submission_recovery_timeout", 600)
     data["task_timeout"] = data.get("task_timeout") or PROFILES[data["model"]]["task_timeout"]
     if not 1 <= data["max_steps"] <= 200:
         raise ValueError("max_steps must be between 1 and 200")
@@ -120,6 +129,18 @@ def load_settings(mode, config_path, overrides):
         raise ValueError("TTS samples must be at least two")
     if data["task_timeout"] <= 0:
         raise ValueError("task_timeout must be positive")
+    if data["adaptive_io"] and not data["io_device"]:
+        raise ValueError("adaptive_io requires io_device for the experiment disk")
+    for key in ('adaptive_io', 'pin_cpus'):
+        if type(data[key]) is not bool:
+            raise ValueError(key + ' must be a boolean')
+    if data['adaptive_io']:
+        component(data['io_device'], 'io_device')
+        if not (Path('/sys/class/block') / data['io_device']).exists():
+            raise ValueError('io_device must name an existing Linux block device')
+    for key in ("environment_start_concurrency", "local_command_concurrency", "submission_recovery_timeout"):
+        if type(data[key]) is not int or data[key] < 1:
+            raise ValueError(key + " must be a positive integer")
     if data["stage"] not in ("all", "localization", "patch"):
         raise ValueError("stage must be all, localization, or patch")
     if mode != "our_method" and (data.get("locations") or data["stage"] != "all"):
