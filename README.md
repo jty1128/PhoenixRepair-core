@@ -93,6 +93,8 @@ Qwen-3.7 Plus 分项计费（美元 USD）：
 | Sample 3 | $0.1904–$0.2100 | $0.7659–$1.0551 | $0.1694 | $1.1257–$1.4345 | $57.41–$73.16 |
 | TTS Final | $0.7835–$0.8819 | $2.9509–$4.1109 | $0.6944–$0.7349 | $4.4288–$5.7277 | $225.87–$292.11 |
 
+逐题来源构成、51 题总量、缓存类别拆分与异常结束统计见[详细核对报告](docs/kimi-merged-results-20261109.md)，聚合数据提供 [JSON](results/kimi_hard51_merged_usage_20261109.json) / [CSV](results/kimi_hard51_merged_usage_20261109.csv)。
+
 计费沿用固定汇率 **1 USD = 6.7168 CNY**，按[阿里云百炼北京地域 Kimi 公开价](https://help.aliyun.com/zh/model-studio/kimi-k2-7-code)计算：普通输入 6.5、隐式缓存命中 1.3、显式缓存命中 0.65、显式缓存创建 8.125、输出 27 CNY / 百万 tokens。非缓存输入费用包含显式缓存创建费用。
 
 - **Token 范围**：三个 Sample 的已记录用量可精确汇总。保留的 28 题旧 Final 所需 summary 缺少逐题用量，只有原始 51 题 summary 总量；TTS 下界先计入全部已确认生成用量及 23 题新 summary，上界再加入全部旧 summary。此为保守范围，不按题数比例分摊。
