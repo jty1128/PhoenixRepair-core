@@ -13,8 +13,10 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 API_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 FIELDS = ("instance_id", "problem_statement", "base_commit", "repo_name", "image_name")
+CONTEXT_DEFAULTS = dict(max_input_tokens=131072, context_compaction_threshold=120000,
+                        context_compaction_target=110000)
 PROFILES = {
-    "glm-5.2": dict(max_tokens=8192, timeout=240, tool_choice="required", thinking=False, task_timeout=7200),
+    "glm-5.2": dict(max_tokens=32768, timeout=240, tool_choice="required", thinking=False, task_timeout=7200),
     "qwen3.7-plus": dict(max_tokens=32768, timeout=600, tool_choice="auto", thinking=False, task_timeout=7200),
     "kimi-k2.7-code": dict(max_tokens=32768, timeout=240, tool_choice="auto", thinking=True, task_timeout=3000),
 }
@@ -59,7 +61,13 @@ def load_instances(path: Path, selected=(), limit=0):
     return clean[:limit] if limit else clean
 
 
-def model_config(model, api_base, *, p0=False):
+def p0_budget(settings):
+    """Shared candidate/summary/final budget; absent override retains the legacy reservation."""
+    configured = settings.get("p0_call_budget")
+    return configured if configured is not None else settings.get("max_steps", 200) - 40
+
+
+def model_config(model, api_base, *, p0=False, context_settings=None):
     profile = PROFILES[model]
     data = {
         "name": "openai/" + model, "api_base": api_base, "api_key": "$PHOENIX_API_KEY",
@@ -67,7 +75,7 @@ def model_config(model, api_base, *, p0=False):
         "total_cost_limit": 0, "per_instance_call_limit": 0, "max_input_tokens": 131072,
         "context_compaction_threshold": 120000, "context_compaction_target": 110000,
         "context_keep_first_rounds": 5, "context_keep_last_rounds": 5,
-        "retry": {"retries": 1 if p0 else 20, "min_wait": 10, "max_wait": 120},
+        "retry": {"retries": 8 if p0 else 20, "min_wait": 10, "max_wait": 120},
         "completion_kwargs": {
             "extra_body": {"enable_thinking": profile["thinking"]},
             "max_tokens": profile["max_tokens"], "timeout": profile["timeout"],
@@ -79,6 +87,10 @@ def model_config(model, api_base, *, p0=False):
         data["completion_kwargs"]["extra_body"]["preserve_thinking"] = True
     if p0:
         data["request_min_interval"] = 2
+    data.update({k: context_settings[k] for k in CONTEXT_DEFAULTS
+                 if context_settings and k in context_settings})
+    if context_settings and context_settings.get("max_output_tokens") is not None:
+        data["completion_kwargs"]["max_tokens"] = context_settings["max_output_tokens"]
     return data
 
 
@@ -88,7 +100,7 @@ def load_settings(mode, config_path, overrides):
                "task_timeout", "locations", "stage", "docker_host", "container_cpus", "container_memory",
                "localization_max_steps", "localization_timeout", "adaptive_io", "io_device",
                "environment_start_concurrency", "local_command_concurrency", "pin_cpus",
-               "submission_recovery_timeout"}
+               "submission_recovery_timeout", "p0_call_budget", "max_output_tokens", *CONTEXT_DEFAULTS}
     if set(data) - allowed:
         raise ValueError("Unknown configuration fields: " + ", ".join(sorted(set(data) - allowed)))
     data.update({k: v for k, v in overrides.items() if v is not None})
@@ -117,8 +129,25 @@ def load_settings(mode, config_path, overrides):
     data.setdefault("local_command_concurrency", 4)
     data.setdefault("submission_recovery_timeout", 600)
     data["task_timeout"] = data.get("task_timeout") or PROFILES[data["model"]]["task_timeout"]
+    context = {k: data.get(k, v) for k, v in CONTEXT_DEFAULTS.items()}
+    for key, value in context.items():
+        minimum = 0 if key == "context_compaction_threshold" else 1
+        if type(value) is not int or value < minimum:
+            raise ValueError(key + " must be an integer >= " + str(minimum))
+    if context["context_compaction_threshold"]:
+        if not (context["context_compaction_target"] <= context["context_compaction_threshold"]
+                < context["max_input_tokens"]):
+            raise ValueError("Require compaction target <= threshold < max_input_tokens")
     if not 1 <= data["max_steps"] <= 200:
         raise ValueError("max_steps must be between 1 and 200")
+    if data.get("max_output_tokens") is not None:
+        if type(data["max_output_tokens"]) is not int or data["max_output_tokens"] < 1:
+            raise ValueError("max_output_tokens must be a positive integer")
+    if data.get("p0_call_budget") is not None:
+        if mode != "our_method":
+            raise ValueError("p0_call_budget only applies to our_method")
+        if type(data["p0_call_budget"]) is not int or not 1 <= data["p0_call_budget"] <= data["max_steps"]:
+            raise ValueError("p0_call_budget must be an integer between 1 and max_steps")
     if not 1 <= data["localization_max_steps"] <= 200:
         raise ValueError("localization_max_steps must be between 1 and 200")
     if data.get("localization_timeout") is not None and data["localization_timeout"] <= 0:

@@ -15,9 +15,9 @@ import threading
 
 import yaml
 
-from phoenix.p0_guidance import IMPLEMENTATION_GUIDANCE
+from phoenix.p0_guidance import IMPLEMENTATION_GUIDANCE, FULL_BUDGET_IMPLEMENTATION_GUIDANCE
 from phoenix.prompts import PromptBuilder
-from phoenix.settings import ROOT, model_config, write_json
+from phoenix.settings import ROOT, model_config, p0_budget, write_json
 from phoenix.run_state import read, digest, process_identity, lock
 from phoenix.resources import io_slot
 
@@ -53,10 +53,12 @@ def build_config(request):
                 limit_submission_mode="official_v2_staged_diff", localization_workflow=False,
                 localization_independent_hypotheses=False, localization_complete_strategies=False)
     p0 = settings["method"] == "our_method"
-    data["model"] = model_config(settings["model"], settings["api_base"], p0=p0)
+    data["model"] = model_config(settings["model"], settings["api_base"], p0=p0, context_settings=settings)
     data["tools"].update(git_execution_timeout=180, max_consecutive_execution_timeouts=0)
     if p0:
-        data["templates"]["instance_template"] += "\n" + IMPLEMENTATION_GUIDANCE
+        guidance = (FULL_BUDGET_IMPLEMENTATION_GUIDANCE.replace("All 200 model calls", f"All {p0_budget(settings)} model calls")
+                    if p0_budget(settings) != settings["max_steps"] - 40 else IMPLEMENTATION_GUIDANCE)
+        data["templates"]["instance_template"] += "\n" + guidance
         data["tools"]["total_execution_timeout"] = settings["task_timeout"]
     agent = DefaultAgentConfig.model_validate(data)
     helper = PromptBuilder()
@@ -112,7 +114,7 @@ def build_config(request):
     return config, guidance
 
 
-def install_p0_budget(agent, allowance, final_stage, stage=None, initial_calls=0):
+def install_p0_budget(agent, allowance, final_stage, stage=None, initial_calls=0, *, full_budget=False, task_call_budget=200):
     """Retain the historical author allowance and reminders, then stop at P0."""
     from sweagent.agent.hooks.abstract import AbstractAgentHook
     from sweagent.exceptions import InstanceCallLimitExceededError
@@ -128,7 +130,10 @@ def install_p0_budget(agent, allowance, final_stage, stage=None, initial_calls=0
                     "output_stage": "P0" if final_stage else "candidate"})
 
         def on_init(self, *, agent):
-            original = agent.model.query
+            # Retries happen inside query(). Charge each individual attempt,
+            # including failures, rather than only the outer query invocation.
+            method = "_single_query" if hasattr(agent.model, "_single_query") else "query"
+            original = getattr(agent.model, method)
 
             def query(*args, **kwargs):
                 if self.calls >= allowance:
@@ -136,7 +141,7 @@ def install_p0_budget(agent, allowance, final_stage, stage=None, initial_calls=0
                 self.calls += 1
                 self.persist()  # Charge before the request, including failed/in-flight calls.
                 return original(*args, **kwargs)
-            agent.model.query = query
+            setattr(agent.model, method, query)
             if stage is not None:
                 original_submit = agent.handle_submission
 
@@ -180,10 +185,15 @@ def install_p0_budget(agent, allowance, final_stage, stage=None, initial_calls=0
         def on_model_query(self, *, messages, agent):
             remaining = allowance - self.calls
             if self.calls == 0 or remaining in (20, 10, 5, 2, 1):
+                if full_budget:
+                    next_stage = ("This is the final P0 stage; all stated calls are available for generation and checks. " if final_stage else
+                                  f"This is an intermediate candidate; summary and final generation follow within the shared {task_call_budget}-call budget. ")
+                else:
+                    next_stage = ("Review and one focused repair have separate reserved calls within the task total. " if final_stage else
+                                  "This is an intermediate candidate; independent review is reserved for the final patch after summary. ")
                 messages.append({"role": "user", "agent": agent, "content":
                     f"This stage allows {allowance} initial generation calls; {remaining} remain. "
-                    + ("Review and one focused repair have separate reserved calls within the task total. " if final_stage else
-                       "This is an intermediate candidate; independent review is reserved for the final patch after summary. ")
+                    + next_stage
                     + "Complete the issue, run focused checks, remove temporary files and submit before this allowance ends."})
     hook = AuthorBudget()
     agent.add_hook(hook)
@@ -226,6 +236,15 @@ def install_durability(agent, request, budget):
 
         def on_init(self, *, agent):
             self.agent = agent
+            if budget is None:
+                method = "_single_query" if hasattr(agent.model, "_single_query") else "query"
+                original_attempt = getattr(agent.model, method)
+                def counted_attempt(*a, **kw):
+                    self.calls += 1
+                    write_json(stage / "author_budget.json", {"attempted_calls": self.calls,
+                        "generation_allowance": None, "review_calls": 0, "repair_calls": 0})
+                    return original_attempt(*a, **kw)
+                setattr(agent.model, method, counted_attempt)
             original = agent.model.query
             def charged(*a, **kw):
                 if request.get("deadline") and time.time() >= request["deadline"]:
@@ -236,10 +255,6 @@ def install_durability(agent, request, budget):
                     write_json(stage / "query-state.json", {
                         "reserved_step": request.get("steps_offset", 0) + len(agent.trajectory) + 1})
                     write_json(stage / "checkpoint.json", agent.get_trajectory_data())
-                if budget is None:
-                    self.calls += 1
-                    write_json(stage / "author_budget.json", {"attempted_calls": self.calls,
-                        "generation_allowance": None, "review_calls": 0, "repair_calls": 0})
                 return original(*a, **kw)
             agent.model.query = charged
 
@@ -257,6 +272,7 @@ def install_durability(agent, request, budget):
                 self.agent._total_execution_time = request.get("prior_execution_seconds", 0)
                 self.agent.info.update(data["info"])
                 self.agent.info.update(submission=None, exit_status=None)
+                self.agent.info.pop("api_error", None)
                 stats = data["info"].get("model_stats")
                 if stats:
                     self.agent.model.stats = type(self.agent.model.stats).model_validate(stats)
@@ -350,7 +366,9 @@ def execute(request):
     hook = None
     if request["settings"]["method"] == "our_method":
         hook = install_p0_budget(runner.agent, request["generation_allowance"], request["final_stage"],
-                                 stage, request.get("prior_calls", 0))
+                                 stage, request.get("prior_calls", 0),
+                                 full_budget=p0_budget(request["settings"]) != request["settings"]["max_steps"] - 40,
+                                 task_call_budget=p0_budget(request["settings"]))
         hook.persist()
     install_durability(runner.agent, request, hook)
     failed = False

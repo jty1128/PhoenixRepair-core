@@ -8,13 +8,13 @@ from pathlib import Path
 import threading
 import time
 
-from phoenix.settings import localization_config, write_json
+from phoenix.settings import localization_config, p0_budget, write_json
 from phoenix.summary import summarize
 from phoenix.run_state import bind, digest
 from phoenix.backend import DockerBackend, ControllerInterrupted
 
 
-def task_jobs(method, samples=3, candidates=1, max_calls=200):
+def task_jobs(method, samples=3, candidates=1, max_calls=200, *, p0_call_budget=None):
     if method == "single":
         return [dict(stage="sample-1", kind="sample", final=True, allowance=max_calls)]
     if method == "tts":
@@ -24,15 +24,20 @@ def task_jobs(method, samples=3, candidates=1, max_calls=200):
         raise ValueError("At least one complete localization candidate is required")
     if max_calls <= 40:
         raise ValueError("P0 preserves the original 40-call reservation; max_steps must exceed 40")
+    budget = p0_budget({"max_steps": max_calls, "p0_call_budget": p0_call_budget})
+    if type(budget) is not int or not 1 <= budget <= max_calls:
+        raise ValueError("Invalid shared P0 call budget")
     if candidates == 1:
-        return [dict(stage="candidate-1", kind="candidate", final=True, allowance=max_calls - 40)]
+        return [dict(stage="candidate-1", kind="candidate", final=True, allowance=budget)]
     candidate_pool = max_calls // 2
+    if budget <= candidate_pool + 1:
+        raise ValueError("P0 budget must leave a call for both summary and final generation")
     if candidates > candidate_pool:
         raise ValueError("Too many candidates for the shared task budget")
     return [dict(stage=f"candidate-{i+1}", kind="candidate", final=False,
                  allowance=candidate_pool // candidates + (i < candidate_pool % candidates)) for i in range(candidates)] + [
         dict(stage="summary", kind="summary", final=False),
-        dict(stage="final", kind="final", final=True, allowance=max_calls - candidate_pool - 1 - 40)]
+        dict(stage="final", kind="final", final=True, allowance=budget - candidate_pool - 1)]
 
 
 def load_location(root, task, model):
@@ -73,7 +78,8 @@ def run_task(task, settings, backend, key, candidates=None, summary_fn=summarize
     directory.mkdir(parents=True, exist_ok=True)
     write_json(directory / "instance.json", task)
     method = settings["method"]
-    jobs = task_jobs(method, settings["samples"], len(candidates or []) if method == "our_method" else 1, settings["max_steps"])
+    jobs = task_jobs(method, settings["samples"], len(candidates or []) if method == "our_method" else 1,
+                     settings["max_steps"], p0_call_budget=settings.get("p0_call_budget"))
     bind(directory / "task-identity.json", dict(task=task, jobs=jobs, candidates=candidates,
                                                model=settings["model"], method=method))
     write_json(directory / "plan.json", jobs)
@@ -89,7 +95,7 @@ def run_task(task, settings, backend, key, candidates=None, summary_fn=summarize
             candidate = candidates[len(results)] if job["kind"] == "candidate" else None
             allowance = job["allowance"]
             if method == "our_method" and job["kind"] == "final":
-                allowance = settings["max_steps"] - used - 40
+                allowance = p0_budget(settings) - used
                 if allowance < 1:
                     raise RuntimeError("No generation budget remains for final P0")
             result = backend.generate(task, stage, allowance=allowance, final_stage=job["final"],

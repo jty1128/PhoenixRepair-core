@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import json
 import logging
 import shlex
@@ -46,6 +47,7 @@ from sweagent.exceptions import (
     CostLimitExceededError,
     FormatError,
     FunctionCallingFormatError,
+    ModelAPIError,
     TotalCostLimitExceededError,
 )
 from sweagent.tools.parsing import (
@@ -872,6 +874,33 @@ class DefaultAgent(AbstractAgent):
             {"role": "user", "content": error_template, "agent": self.name, "message_type": "user"},
         ]
 
+    def interrupt_after_api_error(self, error: ModelAPIError) -> StepOutput:
+        """Save unfinished work without invoking submission/review hooks."""
+        from sweagent.agent.api_errors import interrupted_patch_command
+
+        details = dict(error.details)
+        self.logger.warning("%s; preserving generation checkpoint without submission", error)
+        if self.traj_path is not None:
+            try:
+                assert self._env is not None and self._env.repo is not None
+                patch = self._env.communicate(
+                    interrupted_patch_command("/" + self._env.repo.repo_name), check="raise", timeout=60,
+                )
+                path = self.traj_path.with_name("api-interrupted.patch")
+                temporary = path.with_suffix(".patch.tmp")
+                temporary.write_text(patch)
+                temporary.replace(path)
+                details["patch_sha256"] = hashlib.sha256(patch.encode()).hexdigest()
+            except Exception as capture_error:
+                details["checkpoint_error"] = type(capture_error).__name__
+            path = self.traj_path.with_name("api-interrupted.json")
+            temporary = path.with_suffix(".json.tmp")
+            temporary.write_text(json.dumps(details, indent=2) + "\n")
+            temporary.replace(path)
+        return StepOutput(done=True, exit_status="exit_api", submission=None,
+            thought=str(error), output=str(error),
+            extra_info={"generation_interrupted": True, "api_error": details})
+
     def attempt_autosubmission_after_error(self, step: StepOutput) -> StepOutput:
         """For most exceptions, we attempt to still extract the patch and submit that.
         This means we send the `submit` command to the runtime and parse the output.
@@ -1421,12 +1450,13 @@ class DefaultAgent(AbstractAgent):
                     "exit_cost",
                     "Exit due to cost limit",
                 )
+            except ModelAPIError as e:
+                return self.interrupt_after_api_error(e)
             except RetryError as e:
-                self.logger.exception(f"Exiting due to retry error: {e}", exc_info=True)
-                return handle_error_with_autosubmission(
-                    "exit_api",
-                    f"Exit due to retry error: {e}",
-                )
+                from sweagent.agent.api_errors import is_retryable_api_error
+                cause = e.last_attempt.exception() or e
+                return self.interrupt_after_api_error(ModelAPIError(cause,
+                    attempts=e.last_attempt.attempt_number, retryable=is_retryable_api_error(cause)))
             except SwerexException as e:
                 self.logger.exception(f"Exiting due to environment error: {e}", exc_info=True)
                 return handle_error_with_autosubmission(
@@ -1492,7 +1522,12 @@ class DefaultAgent(AbstractAgent):
             step_output = self.forward_with_handling(self.messages)
             if not step_output.done and 0 < self.max_steps <= len(self.trajectory) + 1:
                 step_output = self._stop_at_step_limit(step_output)
-        self.add_step_to_history(step_output)
+        # No assistant action or tool response was produced by an API failure.
+        # Keep the exact conversation available for a later generation resume.
+        if step_output.exit_status != "exit_api":
+            self.add_step_to_history(step_output)
+        else:
+            self.info["api_error"] = step_output.extra_info["api_error"]
 
         self.info["submission"] = step_output.submission
         self.info["exit_status"] = step_output.exit_status  # type: ignore

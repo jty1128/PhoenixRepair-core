@@ -11,7 +11,7 @@ import subprocess
 import sys
 import signal
 
-from phoenix.settings import ROOT, PROFILES, fingerprint, load_instances, load_settings, write_json
+from phoenix.settings import ROOT, PROFILES, fingerprint, load_instances, load_settings, p0_budget, write_json
 
 
 def main(argv=None):
@@ -27,6 +27,11 @@ def main(argv=None):
     parser.add_argument("--concurrency", type=int)
     parser.add_argument("--samples", type=int, help="Independent TTS samples, default 3")
     parser.add_argument("--max-steps", type=int)
+    parser.add_argument("--p0-call-budget", type=int, help="Shared P0 candidate/summary/final calls; 200 releases the historical 40-call reservation")
+    parser.add_argument("--max-output-tokens", type=int, help="Author output limit; also applies to P0 summary")
+    parser.add_argument("--max-input-tokens", type=int, help="Generation context limit; historical default 131072")
+    parser.add_argument("--context-compaction-threshold", type=int, help="Generation input threshold; 0 disables compaction")
+    parser.add_argument("--context-compaction-target", type=int, help="Target input size after generation context compaction")
     parser.add_argument("--task-timeout", type=int)
     parser.add_argument("--localization-max-steps", type=int, help="Localization cap, historical default 150; patch budget is separate")
     parser.add_argument("--localization-timeout", type=int, help="Optional localization wall-time cap; historical run used a step cap")
@@ -44,7 +49,9 @@ def main(argv=None):
         settings = load_settings(args.method, args.config or ROOT / "configs" / (args.method + ".yaml"), {
             k: getattr(args, k) for k in ("model", "instances", "output", "runtime", "api_base", "concurrency", "samples",
                                          "max_steps", "task_timeout", "localization_max_steps", "localization_timeout",
-                                         "docker_host", "locations", "stage", "adaptive_io", "io_device")})
+                                         "docker_host", "locations", "stage", "adaptive_io", "io_device",
+                                         "max_input_tokens", "context_compaction_threshold", "context_compaction_target",
+                                         "p0_call_budget", "max_output_tokens")})
         settings["resume"] = args.resume
         if not settings.get("instances"):
             raise ValueError("Set --instances /path/to/tasks.jsonl or INSTANCES in .env")
@@ -62,7 +69,9 @@ def main(argv=None):
             for task in instances:
                 load_location(settings["locations"], task, settings["model"])
         plan = dict(recovery_format=1, settings=settings, tasks=len(instances), instance_ids=[x["instance_id"] for x in instances],
-                    task_manifest_sha256=fingerprint(instances), model_profile=PROFILES[settings["model"]],
+                    task_manifest_sha256=fingerprint(instances),
+                    model_profile={**PROFILES[settings["model"]], "max_tokens": settings.get("max_output_tokens") or PROFILES[settings["model"]]["max_tokens"]},
+                    p0_shared_call_limit=p0_budget(settings) if args.method == "our_method" else None,
                     review_calls_enabled=False, repair_stage_enabled=False,
                     method_output="P0" if args.method == "our_method" else "final.patch",
                     old_patch_seed=False, evaluation_feedback_input=False)
@@ -95,7 +104,9 @@ def main(argv=None):
                     raise ValueError("This run predates durable recovery; use a new output directory")
                 immutable = ("model", "method", "api_base", "max_steps", "task_timeout", "samples",
                              "localization_max_steps", "localization_timeout", "locations", "stage",
-                             "runtime", "docker_host", "container_cpus", "container_memory", "pin_cpus")
+                             "runtime", "docker_host", "container_cpus", "container_memory", "pin_cpus",
+                             "max_input_tokens", "context_compaction_threshold", "context_compaction_target",
+                             "p0_call_budget", "max_output_tokens")
                 if (previous.get("task_manifest_sha256") != plan["task_manifest_sha256"] or
                     any(previous["settings"].get(k) != settings.get(k) for k in immutable)):
                     raise ValueError("Resume must preserve task inputs, model, method, locations and original budgets")

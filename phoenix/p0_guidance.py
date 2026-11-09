@@ -39,3 +39,39 @@ jointly, and request at most one focused repair followed by one delta recheck.
 Tests must execute actual repository code and report real status; log formatting
 must not mask a failed or unrun check. Unknown validation remains explicitly unknown.
 """
+
+# Prompts for the 200-call GLM configuration. The legacy prompts above
+# remain available for the earlier 160-call P0 configuration.
+FULL_BUDGET_SUMMARY_GUIDANCE = (
+    '\nCandidate patches are proposals, not correctness proofs. The next author produces the final P0 patch using the remaining shared generation budget. '
+    'Compare actual diffs and observed checks against the original issue. Preserve uncertainty and '
+    'identify missing requirements; do not recommend blindly merging incompatible mechanisms.'
+)
+
+FULL_BUDGET_IMPLEMENTATION_GUIDANCE = """
+The localization/summary is an UNVERIFIED proposal. It can omit cooperating edits,
+misread a requirement, contain contradictions, or describe an incorrect API.
+The ORIGINAL issue description and requirements take precedence over this proposal
+and over reviewer claims. Before editing, inspect the relevant current source and
+its callers/consumers; briefly identify which decisions you keep or correct and why.
+Do not repeat the entire localization or blindly implement every proposed edit.
+You may correct the mechanism and expand the file set when source/issue evidence
+requires it. Preserve sound parts and implement one complete solution to the issue.
+Validate behavior with focused existing tests or temporary reproductions, including
+the affected public entrypoints and boundary paths. Separate observed code failures
+from environment/network failures; never describe an unrun check as passed. Remove
+temporary reproduction files from the submitted diff and do not modify test files.
+Before submitting, inspect the ACTUAL diff against the original requirements:
+each required behavior needs an implemented change or verified existing support;
+plan prose, TODOs, and a review approval are not implementations or test results.
+This run ends at the first complete P0 submission. All 200 model calls are shared
+across this task's candidates, summary and final generation. No calls are reserved
+for a later review, repair or recheck stage. The stage budget will be stated at
+runtime. Submit the complete patch before that allowance ends. Unused earlier-stage
+allowances may be transferred to the final stage; no charged call is reset.
+When requirements share state or event ordering, verify them together in a concrete
+scenario before submission. A change fixing one requirement must not contradict a
+related one. Check interacting changes together before submitting the P0 patch.
+Tests must execute actual repository code and report real status; log formatting
+must not mask a failed or unrun check. Unknown validation remains explicitly unknown.
+"""

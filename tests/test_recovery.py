@@ -53,6 +53,79 @@ def outcome(attempt, *, calls, steps=None, valid=True, patch=PATCH, error="submi
     write_json(attempt / "worker-status.json", {"status": "completed"})
 
 
+def api_interrupted_outcome(attempt, *, calls, retryable=True, patch=PATCH):
+    outcome(attempt, calls=calls, steps=2, patch=patch, error="exit_api")
+    data = read(attempt / "checkpoint.json")
+    data["info"]["api_error"] = {"retryable": retryable, "error_type": "Timeout", "attempts": 3}
+    write_json(attempt / "checkpoint.json", data)
+
+
+def test_api_interruption_resumes_generation_even_if_partial_patch_is_mechanically_valid(fake_backend, task, tmp_path):
+    attempts = []
+    def monitor(request, attempt, child=None):
+        attempts.append(request)
+        if len(attempts) == 1:
+            api_interrupted_outcome(attempt, calls=7)
+        else:
+            assert request["prior_calls"] == 7 and request["prior_steps"] == 2
+            assert request["recovery"]["mode"] == "continue"
+            assert request["settings"]["model"] == "glm-5.2"
+            assert request["generation_allowance"] == 160
+            assert Path(request["recovery"]["patch"]).read_text() == PATCH
+            assert request["recovery"]["trajectory_sha256"] == digest(request["recovery"]["trajectory"])
+            outcome(attempt, calls=10)
+        return 0, False
+    fake_backend._monitor = monitor
+    result = fake_backend.generate(task, tmp_path / "stage", allowance=160, final_stage=True)
+    assert result["model_calls"] == 10 and result["attempts"] == 2
+    assert result["exit_status"] == "submitted" and not result["budget_reset"]
+    assert result["review_calls"] == result["repair_calls"] == 0
+
+
+@pytest.mark.parametrize("retryable,allowance", [(False, 160), (True, 3)])
+def test_permanent_api_failure_or_spent_budget_cannot_publish_partial_patch(
+        fake_backend, task, tmp_path, retryable, allowance):
+    def monitor(request, attempt, child=None):
+        api_interrupted_outcome(attempt, calls=3, retryable=retryable)
+        return 0, False
+    fake_backend._monitor = monitor
+    stage = tmp_path / "stage"
+    with pytest.raises(RuntimeError, match="Generation/recovery failed"):
+        fake_backend.generate(task, stage, allowance=allowance, final_stage=True)
+    result = read(stage / "result.json")
+    assert result["generation_interrupted"] and result["attempts"] == 1
+    assert result["model_calls"] == 3 and not result["budget_reset"]
+    assert not (stage / "final.patch").exists()
+    assert (stage / "attempts/001/P0.patch").read_text() == PATCH
+
+
+def test_transport_recovery_is_bounded_and_does_not_reset_calls(fake_backend, task, tmp_path):
+    def monitor(request, attempt, child=None):
+        api_interrupted_outcome(attempt, calls=request["prior_calls"] + 3)
+        return 0, False
+    fake_backend._monitor = monitor
+    stage = tmp_path / "stage"
+    with pytest.raises(RuntimeError, match="Generation/recovery failed"):
+        fake_backend.generate(task, stage, allowance=160, final_stage=True)
+    result = read(stage / "result.json")
+    assert result["attempts"] == 2 and result["model_calls"] == 6
+    assert result["generation_interrupted"] and not (stage / "final.patch").exists()
+
+
+def test_failed_api_snapshot_keeps_the_original_container(fake_backend, task, tmp_path, monkeypatch):
+    def monitor(request, attempt, child=None):
+        api_interrupted_outcome(attempt, calls=3, patch=None)
+        return 0, False
+    fake_backend._monitor = monitor
+    monkeypatch.setattr(backend, "capture_checkout", lambda *a, **kw: {"status": "capture_failed"})
+    stage = tmp_path / "stage"
+    with pytest.raises(RuntimeError, match="Generation/recovery failed"):
+        fake_backend.generate(task, stage, allowance=160, final_stage=True)
+    result = read(stage / "result.json")
+    assert result["preserved_container_job_id"] and not fake_backend.cleaned
+    assert result["attempts"] == 1 and result["generation_interrupted"]
+
+
 @pytest.mark.parametrize("model", ["glm-5.2", "qwen3.7-plus"])
 def test_startup_retry_then_verified_reuse(fake_backend, task, tmp_path, model):
     fake_backend.settings["model"] = model
@@ -81,6 +154,20 @@ def test_startup_retry_then_verified_reuse(fake_backend, task, tmp_path, model):
             fake_backend.generate(task, stage, allowance=160, final_stage=True)
     finally:
         backend.capture_checkout = original
+
+
+def test_completed_stage_cannot_resume_with_changed_context(fake_backend, task, tmp_path):
+    def monitor(request, attempt, child=None):
+        outcome(attempt, calls=3)
+        return 0, False
+    fake_backend._monitor = monitor
+    stage = tmp_path / "stage"
+    fake_backend.generate(task, stage, allowance=160, final_stage=True)
+    fake_backend.settings.update(max_input_tokens=1048576, context_compaction_threshold=1030000,
+                                 context_compaction_target=1000000)
+    with pytest.raises(ValueError, match="configuration mismatch"):
+        fake_backend.generate(task, stage, allowance=160, final_stage=True)
+    assert len(fake_backend.launches) == 1
 
 
 def test_continue_keeps_calls_steps_time_and_original_model(fake_backend, task, tmp_path, monkeypatch):

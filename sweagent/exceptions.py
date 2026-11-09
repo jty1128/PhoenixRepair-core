@@ -52,3 +52,15 @@ class ModelConfigurationError(Exception):
     """Raised when the model configuration is invalid/no further retries
     should be made.
     """
+
+
+class ModelAPIError(Exception):
+    """An API failure that must preserve generation state, never submit for review."""
+
+    def __init__(self, error: BaseException, *, attempts: int, retryable: bool, budget_exhausted: bool = False):
+        self.details = {
+            "error_type": type(error).__name__, "attempts": attempts,
+            "retryable": retryable, "budget_exhausted": budget_exhausted,
+        }
+        # Do not serialize provider messages, request bodies or credentials.
+        super().__init__(f"Model API interrupted after {attempts} attempts ({type(error).__name__})")

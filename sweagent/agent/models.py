@@ -20,12 +20,13 @@ from swerex.exceptions import SwerexException
 from tenacity import (
     RetryCallState,
     Retrying,
-    retry_if_not_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_random_exponential,
 )
 
 from sweagent import REPO_ROOT
+from sweagent.agent.api_errors import is_api_error, is_retryable_api_error
 from sweagent.exceptions import (
     ContentPolicyViolationError,
     ContextWindowExceededError,
@@ -33,6 +34,7 @@ from sweagent.exceptions import (
     FunctionCallingFormatError,
     InstanceCallLimitExceededError,
     InstanceCostLimitExceededError,
+    ModelAPIError,
     ModelConfigurationError,
     TotalCostLimitExceededError,
 )
@@ -56,8 +58,8 @@ _THREADS_THAT_USED_API_KEYS = []
 class RetryConfig(PydanticBaseModel):
     """This configuration object specifies how many times to retry a failed LM API call."""
 
-    retries: int = 20
-    """Number of retries"""
+    retries: int = Field(default=20, ge=1)
+    """Maximum total attempts per query, including the first request."""
     min_wait: float = 10
     """Minimum wait time between retries (random exponential wait)"""
     max_wait: float = 120
@@ -867,44 +869,41 @@ class LiteLLMModel(AbstractModel):
         messages = self._history_to_messages(history)
 
         def retry_warning(retry_state: RetryCallState):
-            exception_info = ""
-            if attempt.retry_state.outcome is not None and attempt.retry_state.outcome.exception() is not None:
-                exception = attempt.retry_state.outcome.exception()
-                exception_info = f" due to {exception.__class__.__name__}: {str(exception)}"
-
+            exception = retry_state.outcome.exception() if retry_state.outcome else None
             self.logger.warning(
-                f"Retrying LM query: attempt {attempt.retry_state.attempt_number} "
-                f"(slept for {attempt.retry_state.idle_for:.2f}s)"
-                f"{exception_info}"
+                "Retrying the same LM query after %s (attempt %d/%d, slept %.2fs)",
+                type(exception).__name__, retry_state.attempt_number,
+                self.config.retry.retries, retry_state.idle_for,
             )
 
-        for attempt in Retrying(
+        retrying = Retrying(
             stop=stop_after_attempt(self.config.retry.retries),
             wait=wait_random_exponential(min=self.config.retry.min_wait, max=self.config.retry.max_wait),
             reraise=True,
-            retry=retry_if_not_exception_type(
-                (
-                    ContextWindowExceededError,
-                    CostLimitExceededError,
-                    RuntimeError,
-                    litellm.exceptions.UnsupportedParamsError,
-                    litellm.exceptions.NotFoundError,
-                    litellm.exceptions.PermissionDeniedError,
-                    litellm.exceptions.ContextWindowExceededError,
-                    litellm.exceptions.APIError,
-                    litellm.exceptions.ContentPolicyViolationError,
-                    TypeError,
-                    litellm.exceptions.AuthenticationError,
-                    ContentPolicyViolationError,
-                    ModelConfigurationError,
-                    KeyboardInterrupt,
-                    IndexError,
-                )
-            ),
+            retry=retry_if_exception(is_retryable_api_error),
             before_sleep=retry_warning,
-        ):
-            with attempt:
-                result = self._query(messages, n=n, temperature=temperature)
+        )
+        last_api_error = None
+        attempt_number = 0
+        try:
+            for attempt in retrying:
+                attempt_number = attempt.retry_state.attempt_number
+                with attempt:
+                    try:
+                        result = self._query(messages, n=n, temperature=temperature)
+                    except Exception as error:
+                        if is_api_error(error):
+                            last_api_error = error
+                        raise
+        except Exception as error:
+            # A failed transport attempt can consume the last call. Do not let
+            # the next budget check disguise that interruption as a submission.
+            exhausted = isinstance(error, InstanceCallLimitExceededError) and last_api_error is not None
+            if is_api_error(error) or exhausted:
+                cause = last_api_error if exhausted else error
+                raise ModelAPIError(cause, attempts=attempt_number - int(exhausted),
+                    retryable=is_retryable_api_error(cause), budget_exhausted=exhausted) from error
+            raise
         if n is None or n == 1:
             return result[0]
         return result

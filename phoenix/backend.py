@@ -170,11 +170,19 @@ class DockerBackend:
                     raise ValueError("Saved capture changed; refusing to reuse it")
                 patch = attempt / "captured.patch"
         exit_status = read(attempt / "submission.json").get("exit_status") or info.get("exit_status")
+        api_error = info.get("api_error", {})
+        if exit_status == "exit_api":
+            saved = attempt / "generate/author/api-interrupted.patch"
+            metadata = read(saved.with_suffix(".json"))
+            if saved.is_file() and metadata.get("patch_sha256"):
+                if digest(saved) != metadata["patch_sha256"]:
+                    raise ValueError("Interrupted generation patch changed; refusing to replay it")
+                patch = saved
         log = log_tail(attempt / "generation.log")
         reason, limit = retry_reason(log, exit_status,
                                      model_started=(calls > request.get('prior_calls', 0)
                                                     or steps > request.get('prior_steps', 0)),
-                                     trajectory=data.get("trajectory", []))
+                                     trajectory=data.get("trajectory", []), api_error=api_error)
         if self.settings["method"] != "our_method" and reason == "container_start_timeout":
             limit = self.profile["environment_start_retries"]
         if not patch and (timed_out or reason or rc != 0):
@@ -189,6 +197,7 @@ class DockerBackend:
                 "calls": calls, "steps": max(request.get("prior_steps", 0), steps),
                 "execution_seconds": state.get("execution_seconds", request.get("prior_execution_seconds", 0)),
                 "exit_status": exit_status, "reason": reason, "retry_limit": limit,
+                "api_error": api_error,
                 "timed_out": timed_out, "returncode": rc, "model_stats": info.get("model_stats", {}),
                 "mechanical": read(attempt / "P0.json").get("mechanical_validation", {}),
                 "capture": read(attempt / "capture.json")}
@@ -218,7 +227,7 @@ class DockerBackend:
         stage.mkdir(parents=True, exist_ok=True)
         identity = dict(task=task, method=self.settings["method"], model=self.settings["model"],
             model_config=model_config(self.settings["model"], self.settings["api_base"],
-                                      p0=self.settings["method"] == "our_method"),
+                                      p0=self.settings["method"] == "our_method", context_settings=self.settings),
             max_steps=self.settings["max_steps"], task_timeout=self.settings["task_timeout"],
             allowance=allowance, final_stage=final_stage, candidate=candidate, summary=summary,
             num_candidates=num_candidates, base_agent=self.base)
@@ -291,7 +300,12 @@ class DockerBackend:
                 # On controller interruption _monitor raises before cleanup:
                 # the exact live worker is adopted by the next --resume.
                 observed = self._read_attempt(request, attempt, rc, timed_out)
-                self.cleanup(request["job_id"])
+                if observed["exit_status"] == "exit_api" and observed["patch"] is None:
+                    # Keep the original checkout if neither capture succeeded.
+                    # A failed snapshot must not destroy the only copy of work.
+                    state["preserved_container_job_id"] = request["job_id"]
+                else:
+                    self.cleanup(request["job_id"])
                 self.ports.discard(request["port"])
                 terminal = read(attempt / 'worker-status.json')
                 ended = (terminal.get('at', time.time()) if terminal.get('status') in ('completed', 'failed')
@@ -302,6 +316,22 @@ class DockerBackend:
                              steps=max(state["steps"], observed["steps"]),
                              execution_seconds=max(state.get("execution_seconds", 0), observed["execution_seconds"]))
                 patch = observed["patch"]
+                if observed["exit_status"] == "exit_api":
+                    state["last_api_error"] = observed["api_error"]
+                    remaining = self.settings["task_timeout"] - state["spent_seconds"]
+                    calls_left = self.settings["method"] != "our_method" or state["calls"] < allowance
+                    if (patch is not None and observed["trajectory"] and not observed["timed_out"]
+                            and remaining > 0 and calls_left and state["steps"] < self.settings["max_steps"]
+                            and reserve_retry(state, observed["reason"], observed["retry_limit"])):
+                        state["recovery"] = dict(mode="continue", patch=str(patch), patch_sha256=digest(patch),
+                            trajectory=str(observed["trajectory"]), trajectory_sha256=digest(observed["trajectory"]))
+                        write_json(stage / "execution.json", state)
+                        print(f"[recovery] {task['instance_id']} {stage.name}: API interrupted generation; "
+                              f"resume saved code/history with calls={state['calls']}; no review", flush=True)
+                        continue
+                    # Even a mechanically valid diff is unfinished generation.
+                    # Never turn an exhausted API retry into a completed P0.
+                    break
                 if mode == "submission" and not observed["mechanical"].get("valid"):
                     # Keep the original immutable seed even if replay failed
                     # halfway through applying it in a disposable checkout.
@@ -352,5 +382,8 @@ class DockerBackend:
             write_json(stage / "execution.json", state)
             write_json(stage / "result.json", dict(status="failed", model_calls=state["calls"],
                 steps=state["steps"], attempts=state["attempts"], budget_reset=False,
-                review_calls=0, repair_calls=0, error="Bounded recovery exhausted; original work retained"))
+                review_calls=0, repair_calls=0, api_error=state.get("last_api_error"),
+                generation_interrupted="last_api_error" in state,
+                preserved_container_job_id=state.get("preserved_container_job_id"),
+                error="Bounded recovery exhausted; original work retained"))
             raise RuntimeError("Generation/recovery failed: " + str(stage))

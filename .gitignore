@@ -17,7 +17,10 @@ __pycache__/
 build/
 dist/
 runs/
+/results/
 experiments/
+!configs/experiments/
+!configs/experiments/*.yaml
 source-cache/
 data/
 datasets/

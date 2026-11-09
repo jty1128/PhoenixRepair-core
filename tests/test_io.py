@@ -46,7 +46,7 @@ def test_branch_default_matches_configuration(tmp_path, task, mode):
 
 @pytest.mark.parametrize("bad_response", [False, True])
 @pytest.mark.parametrize("mode,model,temperature,output_limit,timeout", [
-    ("our_method", "glm-5.2", 0, 8192, (30, 240)),
+    ("our_method", "glm-5.2", 0, 32768, (30, 240)),
     ("our_method", "qwen3.7-plus", 0, 32768, (30, 600)),
     ("tts", "glm-5.2", 0.7, 8192, 120),
     ("tts", "kimi-k2.7-code", 0.7, 32768, 240),

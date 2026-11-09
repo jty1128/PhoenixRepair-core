@@ -58,3 +58,32 @@ def test_p0_budget_charges_errors_and_stops_without_reviewer():
     with pytest.raises(InstanceCallLimitExceededError):
         agent.model.query([])
     assert budget.calls == 2
+
+
+def test_context_override_reaches_worker_without_changing_generation(tmp_path, task, settings):
+    from phoenix.settings import CONTEXT_DEFAULTS
+    settings.update(method="single", model="glm-5.2")
+    request = dict(task=task, settings=settings, stage_dir=str(tmp_path / "stage"),
+        base_agent=prepare_tools(tmp_path)["agent"], port=54321, run_id="fixture", job_id="one")
+    original, _ = build_config(request)
+    settings.update(max_input_tokens=1048576, context_compaction_threshold=1030000,
+                    context_compaction_target=1000000)
+    expanded, _ = build_config(request)
+    for field, default in CONTEXT_DEFAULTS.items():
+        assert original["agent"]["model"][field] == default
+        assert expanded["agent"]["model"][field] == settings[field]
+        expanded["agent"]["model"][field] = default
+    assert expanded == original
+
+
+@pytest.mark.parametrize("overrides", [
+    {"max_input_tokens": 120000},
+    {"context_compaction_target": 120001},
+    {"max_input_tokens": True},
+])
+def test_invalid_context_limits_rejected_before_launch(tmp_path, overrides):
+    from phoenix.settings import load_settings
+    config = tmp_path / "config.yaml"
+    config.write_text("model: glm-5.2\n")
+    with pytest.raises(ValueError):
+        load_settings("single", config, overrides)

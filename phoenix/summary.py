@@ -8,8 +8,8 @@ import os
 import requests
 
 from phoenix.prompts import PromptBuilder
-from phoenix.p0_guidance import SUMMARY_GUIDANCE
-from phoenix.settings import PROFILES, write_json
+from phoenix.p0_guidance import SUMMARY_GUIDANCE, FULL_BUDGET_SUMMARY_GUIDANCE
+from phoenix.settings import PROFILES, p0_budget, write_json
 from phoenix.run_state import bind, read, digest
 
 def sha(path):
@@ -75,7 +75,7 @@ def summarize(task, candidates, settings, directory, key, *, shared_budget=False
                            exit_status="submitted" if p0 else row["exit_status"], patch_sha256=sha(patch), preview=metadata))
     prompt = PromptBuilder()._build_comparison_prompt(task["problem_statement"], inputs, len(inputs))
     if p0:
-        prompt += SUMMARY_GUIDANCE
+        prompt += FULL_BUDGET_SUMMARY_GUIDANCE if p0_budget(settings) != settings["max_steps"] - 40 else SUMMARY_GUIDANCE
     (directory / "prompt.txt").write_text(prompt)
     write_json(directory / "inputs.json", [{k: v for k, v in row.items() if k != "submission"} for row in inputs])
     kimi = settings["model"] == "kimi-k2.7-code"
@@ -84,7 +84,7 @@ def summarize(task, candidates, settings, directory, key, *, shared_budget=False
     if kimi:
         payload["preserve_thinking"] = True
     if p0:
-        payload.update(temperature=0.0, max_tokens=PROFILES[settings["model"]]["max_tokens"])
+        payload.update(temperature=0.0, max_tokens=settings.get("max_output_tokens") or PROFILES[settings["model"]]["max_tokens"])
     timeout = (30, PROFILES[settings["model"]]["timeout"]) if p0 else (240 if kimi else 120)
     bind(directory / "identity.json", {"payload": payload, "api_base": settings["api_base"],
                                       "shared_budget": shared_budget})

@@ -126,8 +126,12 @@ def verified_result(stage):
     return {**result, "patch": str(patch)}
 
 
-def retry_reason(log, exit_status, *, model_started, trajectory=()):
+def retry_reason(log, exit_status, *, model_started, trajectory=(), api_error=None):
     """Historical infrastructure categories; model/format failures are terminal."""
+    if exit_status == "exit_api":
+        # Prefer structured model errors over strings in tool output. A timeout
+        # printed by a repository test is not an API transport failure.
+        return ("api_transport_failure", 1) if (api_error or {}).get("retryable") else ("api_permanent_failure", 0)
     if not model_started:
         if "posix_fallocate64: symbol not found" in log or "/opt/phoenix-python/bin/python3: not found" in log:
             return "portable_runtime_unavailable", 1
