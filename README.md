@@ -1,6 +1,6 @@
 # PhoenixRepair Core
 
-## 实验成绩（截止2026-11-9）
+## Overall（截止2026-11-9）
 
 以下为 **SWE-bench Pro v2 HARD-51** 的成绩汇总，每组 51 题
 
@@ -12,7 +12,7 @@
 | TTS Final | 33/51（64.71%） | 17/51（33.33%） | 34/51（66.67%） |
 | **Our Method · P0** | **35/51（68.63%）** | **21/51（41.18%）** | 未运行 |
 
-### 计费
+### tokens计费
 
 下表同时列出 **GLM 和 Qwen 的 Sample 1、Sample 2、Sample 3、TTS Final、Our Method · P0**。每 task 均为对应实验 51 题的平均值，包含未通过评测的题；。**Input 已包含缓存命中；总 tokens = input + output tokens。**
 
@@ -20,7 +20,7 @@
 - **TTS Final**：三个 samples＋同模型 summary＋final 生成的完整流程成本，不是只计算最后一段生成。
 - **Our Method · P0**：定位＋候选生成＋必要的 summary＋首次 P0 提交前的 final 生成，包含复用定位原本的成本。
 
-按阿里云百炼北京地域在线调用公开价格估算，2026-11-09 核对；下列单价及费用统一使用 **美元（USD）**。沿用本次审计的固定汇率 **1 USD = 6.7168 CNY** 将人民币公开价除以 6.7168 换算。Qwen 本表请求均已核对为单次输入 ≤256K，采用隐式缓存价格；不套用 Batch 优惠。
+按阿里云百炼北京地域在线调用公开价格估算， 下列单价及费用统一使用 **美元（USD）**。沿用本次审计的固定汇率 **1 USD = 6.7168 CNY** 将人民币公开价除以 6.7168 换算。Qwen 本表请求均已核对为单次输入 ≤256K，采用隐式缓存价格。
 
 | 模型 | 非缓存 input（USD / 百万 tokens） | 缓存命中 input（USD / 百万 tokens） | Output（USD / 百万 tokens） |
 | --- | ---: | ---: | ---: |
@@ -52,9 +52,7 @@ GLM-5.2 分项计费（美元 USD）：
 | TTS Final | $1.3520 | $6.8798 | $0.5339 | $8.7657 | $447.05 |
 | Our Method · P0 | $0.3352 | $1.4552 | $0.1653 | $1.9557 | $99.74 |
 
-### Qwen-3.7 Plus：五项实验的每题 tokens
-
-以下均为历史保留实验的 51 题用量；TTS 包含原始三个 samples 和后续 summary/final，Our Method 包含定位和审查前 P0 生成。当前仓库源码固定为 GLM 实验快照，不将这些 Qwen 历史成绩归于当前 GLM 的 200-call 配置。
+### Qwen-3.7 Plus：实验消耗
 
 | 实验 | 成绩 | 总 tokens / task | Input tokens / task（含缓存） | 缓存 input tokens / task | 非缓存 input tokens / task | Output tokens / task |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -74,41 +72,15 @@ Qwen-3.7 Plus 分项计费（美元 USD）：
 | TTS Final | $0.3138 | $0.8337 | $0.1160 | $1.2635 | $64.44 |
 | Our Method · P0 | $0.1236 | $0.2103 | $0.0386 | $0.3724 | $18.99 |
 
-### GLM 补跑后的当前结果
 
-Sample 1/2/3 的成绩、tokens 和计费已统一为补跑替换后的集合；被替换旧样本不再计入当前三行。三个 sample 集合合计 **1,002,690,564 tokens / $330.72**；单份 sample 平均 **$2.1616 / task**，同一道题生成三个 samples 合计平均 **$6.4848**。Our Method 统一采用本轮 200-call / 32K 的 51 题重跑结果。
+## GLM-5.2 参数设定（2026-11-09）
 
-本机统一入口为 `runs/glm-current/manifest.json`，逐题固定所选补丁、评测、轨迹目录及校验哈希；每种方法 51 题。后续统计从这一清单读取，避免将历史运行目录混入当前结果。被替换旧运行的审计记录保留历史标记，已无用途的 GLM 旧轨迹已清理。
+### 生成预算与监督阶段的规则
 
-**TTS Final 仍对应原始 samples → summary → final 流程**，保存其原始输入和成本；尚未用补跑后的 samples 重跑，因此不将新 samples 的用量替换进这一行。旧轨迹清理不影响现有 TTS 输入、当前样本的完整续跑链或 Our Method 的复用定位。
-
-### 用量完整性
-
-各项已知用量均采用 API usage；未返回 usage 的失败、限流或中断请求保持未知，不按零费用处理。按 Sample 1 / Sample 2 / Sample 3 / TTS Final / Our Method 顺序，无 usage 的请求数分别为 **GLM：160 / 61 / 65 / 9 / 2；Qwen：149 / 2 / 2 / 153 / 2**。TTS 与 samples 存在请求复用，这些计数同样不能跨行直接相加。
-
-README 仅公开上述聚合成绩、token 均值、计费估算与统计口径。逐题结果、任务数据、补丁、当前轨迹、日志和用量账本保留在本机，不上传仓库。本次文档更新读取已有评测记录，没有重新运行模型或评测。
-
-## 当前 GLM-5.2 代码与参数（2026-11-09）
-
-`main` 和 `reproduce/glm-5.2` 同步实际执行 GLM P0 实验的源码快照。运行源码、提示词、工具及依赖声明与本机保存的实验快照逐文件一致。默认 `bash our_method.sh`、`configs/models/glm-5.2/our_method.yaml` 和[显式配置](configs/experiments/glm-5.2-p0-200calls-32k.yaml) 使用 **GLM-5.2、每题 200 次共享调用、32,768 输出上限、4 并发**。
-
-公开配置使用可移植的输入、运行时和输出路径；数据由使用者提供。要使用当次生成的相同输入，须通过 `--stage patch --locations ...` 传入同一份任务清单和同模型定位，并使用相同任务镜像与模型服务。默认重新定位会产生新的生成输入。源码一致不等于已经重新验证同一数值成绩；本次同步只做离线和合成流程验证，不调用模型重新评分。
-
-### 生成预算与监督阶段
-
-**本版本只输出首次提交的 P0：独立 reviewer、审查后 repair、recheck 均为 0 次。** 作者自行检查代码、执行测试、修改实现所需的模型调用计入生成预算。原先为后续审查保留的 `10 + 25 + 5 = 40` 次已经全部释放；相应提示词和运行中的预算提醒也已更新。
-
-| 定位候选数 | 调用分配 |
-| --- | --- |
-| 1 | author 最多 200 次 |
-| 2 | 两个候选各 50 次 + summary 1 次 + final 至少 99 次 |
-| 3 | 候选 34 / 33 / 33 次 + summary 1 次 + final 至少 99 次 |
-
-候选未用完的额度转给 final；候选、summary、final 合计最多 200 次，API 失败和重试也计数。定位使用独立预算，可通过 `--locations` 复用已有的同模型定位。轨迹步骤和 API 调用次数是两个不同计数。
 
 ### 模型与运行参数
 
-| 参数 | GLM-5.2 P0 200-call 版本 |
+| 参数 | GLM-5.2 P0 |
 | --- | --- |
 | API 模型 / 协议 | `glm-5.2` / DashScope OpenAI-compatible Chat Completions |
 | Thinking / temperature / top_p | `false` / `0.0` / `1.0` |
@@ -120,11 +92,7 @@ README 仅公开上述聚合成绩、token 均值、计费估算与统计口径�
 | 单个 author 阶段累计时限 | 7,200 秒；恢复不重置；多候选各阶段依次执行 |
 | 单次 author API 超时 | 240 秒 |
 | author API 重试 | 最多 8 次尝试，包含首次；退避 10–120 秒；SDK `num_retries=0` |
-| 请求间隔 | 同账户、同模型最短 2 秒 |
 | P0 summary | 最多 1 次请求；temperature=0，top_p=1；连接/读取超时 30/240 秒 |
-| 题目并发 / 容器启动并发 / 命令并发 | 4 / 2 / 4 |
-| 每个生成容器资源 | 2 CPU、6 GiB 内存 |
-| 独立 reviewer / repair / recheck | 0 / 0 / 0 |
 
 输入上限为 131,072，输出上限为每次响应 32,768。P0 共享调用上限来自 `max_steps: 200`，输出上限来自 `phoenix/settings.py` 中 GLM 的模型配置；author 和 P0 summary 读取同一个值。本版本保留实验源码的接口，不提供额外的 `p0_call_budget` 或 `max_output_tokens` 配置项。
 
