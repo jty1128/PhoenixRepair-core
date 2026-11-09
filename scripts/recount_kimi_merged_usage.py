@@ -64,7 +64,7 @@ def historical_usage(u):
                   requests_with_usage=u['requests_with_usage'],
                   requests_without_usage=u['requests_without_usage'])
     assert result['explicit_cache']+result['implicit_cache'] == c
-    assert abs(costs(result)['total_usd'][0] - D(u['known_usage_list_cost_usd'])) < D('1e-22')
+    assert abs(costs(result)['total_usd'] - D(u['known_usage_list_cost_usd'])) < D('1e-22')
     return result
 
 
@@ -103,21 +103,22 @@ def costs(u):
     creation = D(u.get('cache_creation', 0))*D('8.125')
     known_cache = D(u.get('implicit_cache', 0))*D('1.3') + D(u.get('explicit_cache', 0))*D('.65')
     unknown_i, unknown_c = u.get('unknown_uncached', 0), u.get('unknown_cache', 0)
+    # A fixed public-price convention, not a claim about provider invoice debits.
+    # Preserve observed cache modes; price missing modes as ordinary/implicit.
     result = {
-        'uncached_input_usd': [(ordinary+creation+unknown_i*D(rate))/scale for rate in ('6.5', '8.125')],
-        'cached_input_usd': [(known_cache+unknown_c*D(rate))/scale for rate in ('.65', '1.3')],
-        'output_usd': [D(u['output_tokens'])*27/scale]*2,
+        'uncached_input_usd': (ordinary+creation+unknown_i*D('6.5'))/scale,
+        'cached_input_usd': (known_cache+unknown_c*D('1.3'))/scale,
+        'output_usd': D(u['output_tokens'])*27/scale,
     }
-    result['total_usd'] = [sum(v[n] for v in result.values()) for n in (0, 1)]
+    result['total_usd'] = sum(result.values())
     return result
 
 
 def row(label, passed, usage):
     fees = costs(usage)
-    fee_bounds = {k: [str(v) for v in bounds] for k, bounds in fees.items()}
     return dict(experiment=label, tasks=51, passed=passed,
                 token_totals={k: usage.get(k, 0) for k in TOKEN_KEYS},
-                cost_usd_totals_bounds=fee_bounds)
+                public_price_cost_usd_totals={k: str(v) for k, v in fees.items()})
 
 
 def match_original_summaries(root, ledger_path, selected_final, original_usage):
@@ -201,11 +202,6 @@ def match_original_summaries(root, ledger_path, selected_final, original_usage):
     return retained, proof
 
 
-def interval(values, divisor=1, places=2, currency=False):
-    formatted = [('$' if currency else '') + f'{D(v)/divisor:,.{places}f}' for v in values]
-    return ('–'.join(formatted) if formatted[0] != formatted[1] else formatted[0]).strip()
-
-
 def tables(rows):
     lines = ['| 实验 | 成绩 | 总 tokens / task | Input tokens / task（含缓存） | 缓存 input tokens / task | 非缓存 input tokens / task | Output tokens / task |',
              '| --- | ---: | ---: | ---: | ---: | ---: | ---: |']
@@ -213,14 +209,14 @@ def tables(rows):
         cells = [r['experiment'], f"{r['passed']}/51"]
         cells += [f"{D(r['token_totals'][k])/51:,.2f}" for k in TOKEN_KEYS]
         lines.append('| '+' | '.join(cells)+' |')
-    lines += ['', '分项计费（美元 USD；区间为已记录用量的公开价估算）：', '',
+    lines += ['', '分项计费（美元 USD；实际 Token 按下述固定口径折算的公开价费用）：', '',
               '| 实验 | 非缓存 input 费用 / task | 缓存 input 费用 / task | Output 费用 / task | 合计费用 / task | 51 题总费用 |',
               '| --- | ---: | ---: | ---: | ---: | ---: |']
     for r in rows:
         cells = [r['experiment']]
-        cells += [interval(r['cost_usd_totals_bounds'][k], 51, 4, True)
+        cells += [f"${D(r['public_price_cost_usd_totals'][k])/51:,.4f}"
                   for k in ('uncached_input_usd', 'cached_input_usd', 'output_usd', 'total_usd')]
-        cells.append(interval(r['cost_usd_totals_bounds']['total_usd'], 1, 2, True))
+        cells.append(f"${D(r['public_price_cost_usd_totals']['total_usd']):,.2f}")
         lines.append('| '+' | '.join(cells)+' |')
     return '\n'.join(lines)+'\n'
 
@@ -329,15 +325,17 @@ def main():
                   new23_summary_usage=summary, original51_summary_usage=original['summary'],
                   retained28_original_summary_usage=retained_summary,
                   original_summary_matching=summary_proof,
-                  pricing=dict(base['pricing'], checked_date='2026-11-09'),
+                  pricing=dict(base['pricing'], checked_date='2026-11-09',
+                               unknown_cache_mode_convention='implicit cache hit and ordinary uncached input',
+                               cost_kind='public-price estimate using actual recorded tokens, not invoiced charges'),
                   evidence_sha256={k: digest(getattr(args, k)) for k in ('selected_results', 'merge_audit', 'original_audit', 'summary_ledger')},
                   notes=[
                       'Latest designated rerun replaces the earlier result regardless of evaluation score; not best-of selection.',
                       'Selected TTS is merged sample1/2/3 + 23 new summaries + merged final generation + exactly matched 28 retained original summaries.',
                       'All 51 original successful summary responses uniquely matched to task metadata using completion times, account mapping, one-to-one constraints and start events. No proportional allocation or nearest-time guessing.',
-                      'New ledgers retain token counts but not cache_type or cache creation; unknown cache priced at CNY 0.65–1.3/M, unknown uncached at CNY 6.5–8.125/M.',
+                      'New ledgers retain token counts but not cache_type or cache creation. For a single reproducible public-price estimate, unknown cache is assumed implicit at CNY 1.3/M and unknown uncached input is priced as ordinary input at CNY 6.5/M.',
                       'Noncached fee includes known explicit cache creation at CNY 8.125/M; known original cache modes priced from raw usage.',
-                      'Bounds apply only to recorded usage; requests without usage may incur additional costs. Estimates are not invoices.',
+                      'Fees use actual recorded tokens under the stated pricing convention; requests without usage may incur additional costs. These public-price estimates are not invoiced charges.',
                       'Superseded runs are excluded. Recorded internal recovery attempts of each selected task run are included. Evaluation/server costs are excluded.',
                       'Per-task missing-usage counts are available only for selected reruns, not for retained original tasks. Do not interpret rerun counts as a complete pipeline count.',
                       'Every displayed per-task value is divided by 51, including failures; TTS already includes all three sample rows.',
@@ -347,18 +345,18 @@ def main():
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2)+'\n')
     with args.output.with_suffix('.csv').open('w', newline='') as f:
         writer = csv.writer(f, lineterminator='\n')
-        writer.writerow(['scope', 'experiment', 'passed', 'tasks', 'metric', 'actual_total', 'actual_per_task', 'lower_cost_total', 'upper_cost_total', 'lower_cost_per_task', 'upper_cost_per_task'])
+        writer.writerow(['scope', 'experiment', 'passed', 'tasks', 'metric', 'actual_tokens_total', 'actual_tokens_per_task', 'public_price_cost_usd_total', 'public_price_cost_usd_per_task'])
         for r in selected_rows:
             for k, value in r['token_totals'].items():
-                writer.writerow(['selected', r['experiment'], r['passed'], 51, k, value, str(D(value)/51), '', '', '', ''])
-            for k, bounds in r['cost_usd_totals_bounds'].items():
-                writer.writerow(['selected', r['experiment'], r['passed'], 51, k, '', '', *bounds, *(str(D(v)/51) for v in bounds)])
+                writer.writerow(['selected', r['experiment'], r['passed'], 51, k, value, str(D(value)/51), '', ''])
+            for k, value in r['public_price_cost_usd_totals'].items():
+                writer.writerow(['selected', r['experiment'], r['passed'], 51, k, '', '', value, str(D(value)/51)])
     args.output.with_suffix('.md').write_text('### 最终保留结果\n\n'+tables(selected_rows))
     print(json.dumps({'scores': {r['experiment']: r['passed'] for r in selected_rows},
                       'selected_tts_tokens': selected_rows[-1]['token_totals'],
                       'retained28_original_summary_tokens': {k: retained_summary[k] for k in TOKEN_KEYS},
                       'summary_matching': summary_proof,
-                      'selected_tts_usd': selected_rows[-1]['cost_usd_totals_bounds']['total_usd']}, indent=2))
+                      'selected_tts_public_price_usd': selected_rows[-1]['public_price_cost_usd_totals']['total_usd']}, indent=2))
 
 
 if __name__ == '__main__':
