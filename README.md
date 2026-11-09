@@ -343,11 +343,9 @@ python -m pytest -q
 
 核心 agent 来自 SWE-agent 1.1.0 的项目内改版；保留原 MIT LICENSE。TTS 提示词与原始实验的 sample/summary/final 逻辑一致。完整策略定位和 P0 author guidance 从对应方法快照提取；不包含按任务 ID 分支的修复规则、参考补丁或评测答案。公开版本将服务器专用路径和控制器替换为可配置入口。
 
-## 用 DeepSeek V4.1 Flash 跑同样的 P0 实验（白话说明）
+## 用 DeepSeek V4.1 Flash 跑同样的 P0 实验
 
 这组实验把模型换成 **`deepseek-v4.1-flash`**，其余设置沿用**当前 GLM-5.2 的 200 次 API 调用、32K 输出版本**。定位、候选 patch、summary 和 final 都使用 Flash，不借用 GLM 的定位或补丁，也不切换模型。固定提示词、候选分配、错误恢复规则与当前 GLM 相同，没有按具体题目定制。
-
-模型名称与 thinking 开关参考[阿里云 DeepSeek 接口文档](https://help.aliyun.com/en/model-studio/deepseek-api)。这里使用未带日期后缀的 `deepseek-v4.1-flash`，不自动改成其他版本。下表是本实验主动设置的限制，不是服务商允许的最大值；也不表示已经取得 Flash 的实验分数。
 
 ### 先定位，再生成 patch
 
@@ -355,7 +353,6 @@ python -m pytest -q
 
 - **只有一个定位候选**：生成一次 P0，不再做 summary 或额外 final。
 - **有多个定位候选**：每个候选各生成一个 patch，再做一次 summary，最后从原始代码重新生成最终 P0。
-- **P0 提交后结束**：不再调用独立 reviewer，不做审查后的修复，不启动官方评测。生成期间作者自己读代码、运行验证和修改，不等于额外监督阶段。
 
 ### 轮次、200 次限制、输入大小和上下文
 
@@ -370,11 +367,8 @@ python -m pytest -q
 | 定位输入上下文控制 | **超过 100,000，尝试压到 90,000；随后检查不超过 110,000** | 与 GLM 的定位配置一致；定位使用自己的压缩阈值，不套用 patch 的阈值 |
 | 每次最长输出 | **32,768 tokens** | 定位、author 和 P0 summary 的单次响应上限；不是每题全部响应加起来只有 32K |
 | 多候选 summary | **最多 1 次 API 请求** | 占用上述 200 次；读取候选补丁后给出指导，不做官方评分 |
-| 默认并发 | **4 道题** | 同时推进最多 4 个不同任务；同一道题的候选、summary、final 按顺序执行 |
 
 “步数”和“API 调用次数”不是同一回事。例如一个生成步骤前两次请求超时、第三次成功，就已经消耗 3 次 API 调用，但不一定增加 3 个轨迹步骤。因此不能把“定位 150 步 + 生成 200 次”说成严格最多 350 次 API 请求。
-
-输入上限和输出上限也是两回事。131,072 限制发给 author 的单次输入，32,768 限制单次输出，不能简单相加后宣称服务端一定支持二者同时取满。P0 summary 是独立请求路径，不自动运行 author 的本地输入检查与上下文压缩；较大的候选补丁可能触发服务端限制。压缩是程序抽取，不额外调用模型，完整轨迹仍保留。
 
 生成阶段的 200 次 API 调用具体这样分：
 
@@ -480,33 +474,3 @@ bash run_v41_flash_our_method.sh \
 `--stage all` 表示定位和生成都要跑。这里不要添加 `--locations`，否则会复用现成定位；也不要改成 `--stage patch`，否则就不是从定位开始了。该入口使用 [Flash 配置文件](configs/models/deepseek-v4.1-flash/our_method.yaml)，等价于给 `our_method.sh` 指定这份配置。
 
 如果不想在 `.env` 写任务和 runtime 路径，也可以在上述命令中增加 `--instances /实际路径/instances.json --runtime /实际路径/runtime`。密钥仍由环境变量或 `.env` 提供。
-
-### 第五步：中断后继续跑
-
-仍使用原来的任务、参数和输出目录，在正式运行命令末尾加 `--resume`：
-
-```bash
-bash run_v41_flash_our_method.sh \
-  --stage all \
-  --concurrency 4 \
-  --localization-max-steps 150 \
-  --max-steps 200 \
-  --task-timeout 7200 \
-  --output runs/deepseek-v4.1-flash-p0-200calls-32k \
-  --resume
-```
-
-恢复会检查输入和配置是否一致，保留已完成的阶段，继续扣除已用的 API 调用次数、步数和时间；不会重新获得 200 次。如果是要重新做一轮独立实验，换一个新的 `--output` 目录。
-
-### 第六步：去哪里看结果
-
-以上命令把所有输出放到 `runs/deepseek-v4.1-flash-p0-200calls-32k/`：
-
-- `localization/`：每道题的定位方案和定位记录。
-- `deepseek-v4.1-flash/<instance_id>/P0.patch`：这道题最终生成的 P0 补丁；同目录的 `final.patch` 保存同一补丁。
-- `deepseek-v4.1-flash/<instance_id>/report.json`：这道题是否完成、调用次数等状态；各阶段目录还有详细轨迹和恢复记录。
-- `api-usage.sqlite3`：实际取得的 API 用量记录，可用于统计 tokens。
-
-这条运行命令不会自动做官方评测。拿到 P0 patch 后，需要另行用对应基准的官方评测工具测分。“生成完成”不代表“题目通过”，Flash 的通过率也不保证与 GLM 相同。
-
-本次已离线核对 Flash 与当前 GLM 的配置、完整流程入口、summary 请求参数和恢复计数，相关测试 67 项通过；未启动真实 Flash 实验，也未实测当前账号的 Flash 鉴权和限流情况。
