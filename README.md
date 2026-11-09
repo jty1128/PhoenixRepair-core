@@ -1,6 +1,6 @@
-# PhoenixRepair Core
+# PhoenixRepair
 
-## Overall（截止2026-11-9）
+## Overall Performance
 
 以下为 **SWE-bench Pro v2 HARD-51** 的成绩汇总，每组 51 题
 
@@ -73,9 +73,7 @@ Qwen-3.7 Plus 分项计费（美元 USD）：
 | Our Method · P0 | $0.1236 | $0.2103 | $0.0386 | $0.3724 | $18.99 |
 
 
-### Kimi K2.7 Code：实验消耗（补跑替换后，2026-11-09）
-
-**按补跑结果替换旧结果后的 51 题统计，被替换的旧运行不重复计入。** Sample 1/2/3 分别为 29/51、33/51、33/51；TTS Final 为 34/51。替换以指定补跑为准，不按评测成绩择优。TTS Final 包含合并后的三个 samples、对应 summary 和 final 生成，已包含前三行，不能再相加。Kimi 的 Our Method · P0 未运行。
+### Kimi K2.7 Code：实验消耗
 
 | 实验 | 成绩 | 总 tokens / task | Input tokens / task（含缓存） | 缓存 input tokens / task | 非缓存 input tokens / task | Output tokens / task |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -92,14 +90,6 @@ Qwen-3.7 Plus 分项计费（美元 USD）：
 | Sample 2 | $0.1972 | $1.0495 | $0.1735 | $1.4202 | $72.43 |
 | Sample 3 | $0.1904 | $1.0551 | $0.1694 | $1.4149 | $72.16 |
 | TTS Final | $0.7877 | $4.1107 | $0.7179 | $5.6163 | $286.43 |
-
-逐题来源构成、51 题总量、缓存类别拆分与异常结束统计见[详细核对报告](docs/kimi-merged-results-20261109.md)，聚合数据提供 [JSON](results/kimi_hard51_merged_usage_20261109.json) / [CSV](results/kimi_hard51_merged_usage_20261109.csv)。
-
-计费沿用固定汇率 **1 USD = 6.7168 CNY**，按[阿里云百炼北京地域 Kimi 公开价](https://help.aliyun.com/zh/model-studio/kimi-k2-7-code)计算：普通输入 6.5、隐式缓存命中 1.3、显式缓存命中 0.65、显式缓存创建 8.125、输出 27 CNY / 百万 tokens。非缓存输入费用包含显式缓存创建费用。
-
-- **实际 Token 用量**：已从原服务器取回 summary 账本，并用账号、请求开始/结束时间及启动日志完成 51 题唯一对应。保留的 28 题旧 summary 为 **547,299 tokens**；完整 TTS 为 **1,133,925,931 tokens**。Token 表全部是 provider usage 的实际记录汇总，不再使用范围或按比例分摊。
-- **单值计费口径**：基于实际 Token，已知显式/隐式缓存按原始记录对应的公开价计费；补跑中未保存缓存类型的部分，统一假设为隐式缓存，命中按 1.3、非缓存输入按 6.5 CNY / 百万 tokens 折算。以上为固定口径的公开价费用，**不等于账单实际扣款**。输出已含 thinking，不重复相加。
-- **统计限制**：仅统计有 provider usage 的请求，缺失 usage 的请求不视为零成本，未包含账户折扣及未知请求费用。保留运行内部的已记录恢复尝试计入该运行。此次为不同预算运行合并后的结果，不是统一预算的一次独立实验。
 
 
 ## GLM-5.2 参数设定（2026-11-09）
