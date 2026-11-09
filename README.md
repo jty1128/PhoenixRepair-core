@@ -343,7 +343,7 @@ python -m pytest -q
 
 核心 agent 来自 SWE-agent 1.1.0 的项目内改版；保留原 MIT LICENSE。TTS 提示词与原始实验的 sample/summary/final 逻辑一致。完整策略定位和 P0 author guidance 从对应方法快照提取；不包含按任务 ID 分支的修复规则、参考补丁或评测答案。公开版本将服务器专用路径和控制器替换为可配置入口。
 
-## 用 DeepSeek V4.1 Flash 跑同样的 P0 实验
+## 用 DeepSeek V4.1 Flash 跑（指南）
 
 这组实验把模型换成 **`deepseek-v4.1-flash`**，其余设置沿用**当前 GLM-5.2 的 200 次 API 调用、32K 输出版本**。定位、候选 patch、summary 和 final 都使用 Flash，不借用 GLM 的定位或补丁，也不切换模型。固定提示词、候选分配、错误恢复规则与当前 GLM 相同，没有按具体题目定制。
 
