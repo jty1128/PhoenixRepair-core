@@ -404,17 +404,69 @@ python -m pytest -q
 | P0 summary 超时 | 连接 30 秒 / 读取 240 秒；最多 1 次请求，不套用 author 的 8 次尝试 |
 | 容器资源 | 每个容器 2 CPU、6 GiB 内存；环境启动并发 2，本地命令并发 4 |
 
-### 运行脚本：定位和 patch 一起跑
+### 第一步：准备好代码和运行环境
 
-先按前面的安装说明准备 Python 环境、Docker 镜像和 runtime。把下面两处示例路径替换成自己的任务清单和 runtime 路径；密钥放在本机 `.env` 的 `PHOENIX_API_KEY`，或通过环境变量提供，不写进脚本。
+下面按“在一台新机器上开始跑”来写。如果已经装好本仓库、Python 环境和 runtime，直接从第二步开始。机器需要 Linux x86_64、Python 3.11+，当前账号能使用 Docker；每道题对应的 Docker 镜像要提前准备好。
 
 ```bash
-cd /path/to/PhoenixRepair-core
+git clone https://github.com/jty1128/PhoenixRepair-core.git
+cd PhoenixRepair-core
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e '.[dev,runtime]'
 
-# 从头运行：Flash 定位 → Flash 生成 patch → P0。
+# 首次准备工具运行时；已经有可用 runtime 的机器不用重复创建。
+python -m phoenix.runtime prepare --output "$PWD/.runtime"
+python -m phoenix.runtime check --output "$PWD/.runtime"
+```
+
+这里的 runtime 是供 agent 读写文件、执行工具使用的独立运行环境，不是题目仓库，也不是定位结果目录。准备过程需要联网。已有仓库先更新到包含 Flash 入口的版本，不要重复 clone。
+
+### 第二步：填好密钥、任务文件和 runtime 路径
+
+在仓库根目录准备 `.env`（已有文件就编辑，不要覆盖原来的设置）：
+
+```bash
+[ -f .env ] || cp .env.example .env
+```
+
+用编辑器打开 `.env`，把下面三项换成自己的值：
+
+```dotenv
+PHOENIX_API_KEY="填入你自己的 API key"
+INSTANCES="/绝对路径/instances.json"
+PHOENIX_RUNTIME="/绝对路径/PhoenixRepair-core/.runtime"
+```
+
+- `PHOENIX_API_KEY`：能调用 `deepseek-v4.1-flash` 的 key，不是 GLM 的模型名称。密钥只放本机，不提交到 GitHub。
+- `INSTANCES`：本次要跑哪些题的清单，支持 JSON 数组或 JSONL。每题需要 `instance_id`、`problem_statement`、`base_commit`、`repo_name`、`image_name` 五个字段；仓库不提供具体题目数据。
+- `PHOENIX_RUNTIME`：第一步生成的 `.runtime` 目录，或者你已经准备好的兼容 runtime 的绝对路径。
+
+默认沿用当前 GLM 的 DashScope API 地址。如果你的 key 使用工作空间专属地址，在 `.env` 再写 `API_BASE="https://你的接口地址/compatible-mode/v1"`，填服务商控制台为该 key 提供的实际地址。模型名固定为 `deepseek-v4.1-flash`，脚本不会遇到错误就自动换另一个模型。
+
+### 第三步：先检查参数，不开始花钱跑题
+
+在仓库根目录执行：
+
+```bash
 bash run_v41_flash_our_method.sh \
-  --instances /path/to/instances.json \
-  --runtime /path/to/runtime \
+  --stage all \
+  --concurrency 4 \
+  --localization-max-steps 150 \
+  --max-steps 200 \
+  --task-timeout 7200 \
+  --output runs/deepseek-v4.1-flash-p0-200calls-32k \
+  --dry-run
+```
+
+这一步只检查任务清单和配置，打印准备使用的参数，**不请求模型 API、不启动 Docker**。检查输出中的模型是不是 `deepseek-v4.1-flash`，阶段是不是 `all`。它不能验证 key 是否有权限、镜像是否可用或接口是否限流。
+
+### 第四步：正式运行定位和 patch 生成
+
+去掉上面的 `--dry-run`，执行：
+
+```bash
+bash run_v41_flash_our_method.sh \
   --stage all \
   --concurrency 4 \
   --localization-max-steps 150 \
@@ -423,21 +475,38 @@ bash run_v41_flash_our_method.sh \
   --output runs/deepseek-v4.1-flash-p0-200calls-32k
 ```
 
-入口使用 [Flash 配置](configs/models/deepseek-v4.1-flash/our_method.yaml)。也可以用通用入口，效果相同：
+这条命令的意思是：**用 Flash 先定位，再生成 P0；同时推进 4 道题；每题定位最多 150 步，整个生成阶段共享最多 200 次 API 调用。** 单次输出 32,768 tokens，author 输入检查上限 131,072 tokens；其余上下文和超时设置见上面的表格。
+
+`--stage all` 表示定位和生成都要跑。这里不要添加 `--locations`，否则会复用现成定位；也不要改成 `--stage patch`，否则就不是从定位开始了。该入口使用 [Flash 配置文件](configs/models/deepseek-v4.1-flash/our_method.yaml)，等价于给 `our_method.sh` 指定这份配置。
+
+如果不想在 `.env` 写任务和 runtime 路径，也可以在上述命令中增加 `--instances /实际路径/instances.json --runtime /实际路径/runtime`。密钥仍由环境变量或 `.env` 提供。
+
+### 第五步：中断后继续跑
+
+仍使用原来的任务、参数和输出目录，在正式运行命令末尾加 `--resume`：
 
 ```bash
-bash our_method.sh \
-  --config configs/models/deepseek-v4.1-flash/our_method.yaml \
-  --instances /path/to/instances.json \
-  --runtime /path/to/runtime \
+bash run_v41_flash_our_method.sh \
   --stage all \
-  --output runs/deepseek-v4.1-flash-p0-200calls-32k
+  --concurrency 4 \
+  --localization-max-steps 150 \
+  --max-steps 200 \
+  --task-timeout 7200 \
+  --output runs/deepseek-v4.1-flash-p0-200calls-32k \
+  --resume
 ```
 
-如果你的 key 使用工作空间专属地址，在命令中增加 `--api-base https://你的接口地址/compatible-mode/v1`，或在 `.env` 设置 `API_BASE`。默认沿用当前 GLM 的 DashScope 地址。模型和 key 是否在该地址可用，要以实际账号为准；脚本不会自动换模型、打开 thinking 或放宽参数来绕过接口错误。
+恢复会检查输入和配置是否一致，保留已完成的阶段，继续扣除已用的 API 调用次数、步数和时间；不会重新获得 200 次。如果是要重新做一轮独立实验，换一个新的 `--output` 目录。
 
-首次运行可以先给同一条命令追加 `--dry-run`：只检查输入清单和参数，不调用模型 API、不启动 Docker，也不证明鉴权、镜像或模型接口已经可用。中断后使用原命令和原输出目录加 `--resume`；重新做一轮独立实验则换新输出目录。只要不传 `--locations`，新运行就会先生成 Flash 自己的定位。
+### 第六步：去哪里看结果
 
-最终定位保存在输出目录的 `localization/`，最终补丁保存在 `deepseek-v4.1-flash/<instance_id>/P0.patch`，同目录也保留 `final.patch`。运行记录可以核查实际 API 调用、tokens 和失败原因。此配置只改变模型身份，不能保证 Flash 的通过率与 GLM 相同。
+以上命令把所有输出放到 `runs/deepseek-v4.1-flash-p0-200calls-32k/`：
 
-本次已离线验证配置、完整流程入口、summary 请求参数及恢复计数，相关测试 67 项通过；未启动真实 Flash 实验，也未实测当前账号的 Flash 鉴权和限流情况。
+- `localization/`：每道题的定位方案和定位记录。
+- `deepseek-v4.1-flash/<instance_id>/P0.patch`：这道题最终生成的 P0 补丁；同目录的 `final.patch` 保存同一补丁。
+- `deepseek-v4.1-flash/<instance_id>/report.json`：这道题是否完成、调用次数等状态；各阶段目录还有详细轨迹和恢复记录。
+- `api-usage.sqlite3`：实际取得的 API 用量记录，可用于统计 tokens。
+
+这条运行命令不会自动做官方评测。拿到 P0 patch 后，需要另行用对应基准的官方评测工具测分。“生成完成”不代表“题目通过”，Flash 的通过率也不保证与 GLM 相同。
+
+本次已离线核对 Flash 与当前 GLM 的配置、完整流程入口、summary 请求参数和恢复计数，相关测试 67 项通过；未启动真实 Flash 实验，也未实测当前账号的 Flash 鉴权和限流情况。
