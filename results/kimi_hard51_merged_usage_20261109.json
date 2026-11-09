@@ -7,27 +7,12 @@
       "experiment": "Sample 1",
       "tasks": 51,
       "passed": 29,
-      "token_totals_bounds": {
-        "total_tokens": [
-          280912427,
-          280912427
-        ],
-        "input_tokens": [
-          278824585,
-          278824585
-        ],
-        "cached_input_tokens": [
-          268942448,
-          268942448
-        ],
-        "uncached_input_tokens": [
-          9882137,
-          9882137
-        ],
-        "output_tokens": [
-          2087842,
-          2087842
-        ]
+      "token_totals": {
+        "total_tokens": 280912427,
+        "input_tokens": 278824585,
+        "cached_input_tokens": 268942448,
+        "uncached_input_tokens": 9882137,
+        "output_tokens": 2087842
       },
       "cost_usd_totals_bounds": {
         "uncached_input_usd": [
@@ -52,27 +37,12 @@
       "experiment": "Sample 2",
       "tasks": 51,
       "passed": 33,
-      "token_totals_bounds": {
-        "total_tokens": [
-          289181800,
-          289181800
-        ],
-        "input_tokens": [
-          286980684,
-          286980684
-        ],
-        "cached_input_tokens": [
-          276602298,
-          276602298
-        ],
-        "uncached_input_tokens": [
-          10378386,
-          10378386
-        ],
-        "output_tokens": [
-          2201116,
-          2201116
-        ]
+      "token_totals": {
+        "total_tokens": 289181800,
+        "input_tokens": 286980684,
+        "cached_input_tokens": 276602298,
+        "uncached_input_tokens": 10378386,
+        "output_tokens": 2201116
       },
       "cost_usd_totals_bounds": {
         "uncached_input_usd": [
@@ -97,27 +67,12 @@
       "experiment": "Sample 3",
       "tasks": 51,
       "passed": 33,
-      "token_totals_bounds": {
-        "total_tokens": [
-          290243615,
-          290243615
-        ],
-        "input_tokens": [
-          288094316,
-          288094316
-        ],
-        "cached_input_tokens": [
-          278071469,
-          278071469
-        ],
-        "uncached_input_tokens": [
-          10022847,
-          10022847
-        ],
-        "output_tokens": [
-          2149299,
-          2149299
-        ]
+      "token_totals": {
+        "total_tokens": 290243615,
+        "input_tokens": 288094316,
+        "cached_input_tokens": 278071469,
+        "uncached_input_tokens": 10022847,
+        "output_tokens": 2149299
       },
       "cost_usd_totals_bounds": {
         "uncached_input_usd": [
@@ -142,44 +97,29 @@
       "experiment": "TTS Final",
       "tasks": 51,
       "passed": 34,
-      "token_totals_bounds": {
-        "total_tokens": [
-          1133378632,
-          1134672408
-        ],
-        "input_tokens": [
-          1124568678,
-          1125348862
-        ],
-        "cached_input_tokens": [
-          1083340299,
-          1083416203
-        ],
-        "uncached_input_tokens": [
-          41228379,
-          41932659
-        ],
-        "output_tokens": [
-          8809954,
-          9323546
-        ]
+      "token_totals": {
+        "total_tokens": 1133925931,
+        "input_tokens": 1124818091,
+        "cached_input_tokens": 1083367051,
+        "uncached_input_tokens": 41451040,
+        "output_tokens": 9107840
       },
       "cost_usd_totals_bounds": {
         "uncached_input_usd": [
-          "39.95813186710933777989518818",
-          "44.97768254600404954740352549"
+          "40.17360597680443068127679848",
+          "44.51160889486064792758456408"
         ],
         "cached_input_usd": [
-          "150.4976132607789423535016675",
-          "209.6559403212839447355883754"
+          "150.5027909644473558837541687",
+          "209.6464272198070509766555503"
         ],
         "output_usd": [
-          "35.41400041686517389232968080",
-          "37.47852280848022868032396379"
+          "36.61143401619818961410195331",
+          "36.61143401619818961410195331"
         ],
         "total_usd": [
-          "225.8697455447534540257265365",
-          "292.1121456757682229633158647"
+          "227.2878309574499761791329205",
+          "290.7694701308658885183420677"
         ]
       }
     }
@@ -346,6 +286,27 @@
     "requests_with_usage": 51,
     "requests_without_usage": 28
   },
+  "retained28_original_summary_usage": {
+    "input_tokens": 249413,
+    "output_tokens": 297886,
+    "total_tokens": 547299,
+    "cached_input_tokens": 26752,
+    "uncached_input_tokens": 222661,
+    "ordinary_input": 222661,
+    "cache_creation": 0,
+    "explicit_cache": 0,
+    "implicit_cache": 26752,
+    "requests_with_usage": 28
+  },
+  "original_summary_matching": {
+    "original_successes": 51,
+    "retained_summaries": 28,
+    "replaced_summaries": 23,
+    "matched_by_completion_and_account": 49,
+    "additionally_matched_by_start_events": 2,
+    "bijection_verified": true,
+    "start_events_sha256": "cf44eda07ef1bf83db3620da57544df041aec0856593b4679087d61d621378d6"
+  },
   "pricing": {
     "region": "Beijing",
     "currency": "CNY",
@@ -364,12 +325,13 @@
   "evidence_sha256": {
     "selected_results": "237077d85fee6473d5acf08cce2ecdfd5a177fbf95d2b89b446e3248f6b3ed1b",
     "merge_audit": "f8a9612f6fc6b72dd1f4c77cb7df6a2911b93ca0569c4edc57fb0b0198dc4d03",
-    "original_audit": "be07c8f88935e03626fe06c2a408e3857304b66cfb892502cf27cbe9e96bf1fe"
+    "original_audit": "be07c8f88935e03626fe06c2a408e3857304b66cfb892502cf27cbe9e96bf1fe",
+    "summary_ledger": "1c77a0423422a5dc29c96134dd669d13b7469ca8c2a9641c2b375f3486c4e399"
   },
   "notes": [
     "Latest designated rerun replaces the earlier result regardless of evaluation score; not best-of selection.",
-    "Selected TTS is merged sample1/2/3 + 23 new summaries + merged final generation + unknown share of 28 old summaries.",
-    "Old summary allocation bounds are zero to the entire original 51-summary aggregate; no proportional allocation.",
+    "Selected TTS is merged sample1/2/3 + 23 new summaries + merged final generation + exactly matched 28 retained original summaries.",
+    "All 51 original successful summary responses uniquely matched to task metadata using completion times, account mapping, one-to-one constraints and start events. No proportional allocation or nearest-time guessing.",
     "New ledgers retain token counts but not cache_type or cache creation; unknown cache priced at CNY 0.65–1.3/M, unknown uncached at CNY 6.5–8.125/M.",
     "Noncached fee includes known explicit cache creation at CNY 8.125/M; known original cache modes priced from raw usage.",
     "Bounds apply only to recorded usage; requests without usage may incur additional costs. Estimates are not invoices.",

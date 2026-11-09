@@ -47,12 +47,25 @@ Input 已包含缓存命中；非缓存 input = input − 缓存 input；总 tok
 | 合并后的 Sample 3 | 290,243,615 | 51 题所选运行 |
 | 合并后的 Final 生成 | 272,267,664 | 23 题新 Final + 28 题保留 Final |
 | 23 题新 summary | 773,126 | Input 529,173 + Output 243,953，缓存命中 0 |
-| 28 题保留的旧 summary | 无法逐题精确归属 | 原始 51 题 summary 总量为 1,293,776 |
-| **完整 TTS 已记录用量范围** | **1,133,378,632–1,134,672,408** | 已确认部分 + 旧 summary 的保守归属范围 |
+| 28 题保留的旧 summary | 547,299 | Input 249,413 + Output 297,886，缓存命中 26,752 |
+| **完整 TTS 实际记录用量** | **1,133,925,931** | 合并后的三个 Sample + 51 题对应 summary + 合并后的 Final |
 
-旧 summary 下界按 0、上界按全部旧 51 题 summary 总量计算。这不表示 28 题 summary 实际没有消耗，也不表示要把全部旧 summary 计入最终方案；只是现有证据支持的保守区间。没有按 28/51 比例虚构逐题用量。
+已从原服务器独立 API 账本取回 79 条旧 summary 请求，其中 51 条成功且有 usage；全量核对为 Input 780,184、Output 513,592、缓存 input 75,904，与此前审计总数一致。按以下证据完成逐题唯一对应：
 
-原始 51 题 summary 合计为 Input 780,184、Output 513,592、缓存 input 75,904、非缓存 input 704,280。各列区间都由同一套下界与上界求和得到。README 中 TTS Final 已包括 Sample 1/2/3，不能把四行再相加。
+1. 用完成元数据与账本完成时间筛选候选，并从唯一匹配建立账号与账本 key 指纹的对应关系。
+2. 加入同一账号约束和一题一请求约束，唯一确定 49 题。
+3. 剩余两题完成时间相距约 0.01 秒，不能仅按最近时间猜测。它们的启动事件相隔约 39 秒，与各自 API 请求的开始时间对应，消除歧义。
+4. 核对全部 51 条成功请求一一对应，只保留未被新 Final 替换的 28 题，共 **547,299 tokens**。另外 23 题旧 summary 被排除，不按 28/51 比例分摊。
+
+| 完整 TTS 的 51 题合计 | 实际 tokens |
+| --- | ---: |
+| Input（含缓存） | 1,124,818,091 |
+| 缓存 input | 1,083,367,051 |
+| 非缓存 input | 41,451,040 |
+| Output（含 thinking） | 9,107,840 |
+| **总 tokens** | **1,133,925,931** |
+
+平均每题 **22,233,841.78 tokens**。README 中 TTS Final 已包括 Sample 1/2/3，不能把四行再相加。上述为 provider usage 实际记录值，没有 Token 估算区间。
 
 ## 美元费用与缓存计费
 
@@ -83,13 +96,13 @@ Input 已包含缓存命中；非缓存 input = input − 缓存 input；总 tok
 | sample-3 | 5,846,751 | 42,983 | 106,815 | 125,589,760 | 4,133,113 | 152,374,894 |
 | final | 5,056,400 | 76,862 | 76,862 | 90,068,096 | 5,282,574 | 169,579,126 |
 
-README 的费用上下界分别把已知分类费用、未保存分类部分的价格边界相加；TTS 还叠加旧 summary 归属范围。因此 **完整 TTS 已记录用量的公开价估算为 $225.87–$292.11，平均每题 $4.4288–$5.7277**。它不是统计置信区间，也不是完整账单的上下界；未返回 usage 的请求可能另有费用。
+README 的费用上下界分别把已知分类费用、未保存分类部分的价格边界相加；旧 summary 已精确归属，不再引入 Token 不确定性。**完整 TTS 已记录用量的公开价估算为 $227.29–$290.77，平均每题 $4.4566–$5.7014**。费用范围只来自补跑缓存计费类别未保存，与 Token 数量无关。它不是统计置信区间，也不是完整账单的上下界；未返回 usage 的请求可能另有费用。
 
 ## 数据完整性与异常结束
 
 旧服务器数据已经备份。传输记录为 13,956 个文件、7,109,140,049 字节，完成状态为 completed，校验错误为 0。原始 Sample 1/2/3 和 Final 各有 51 题轨迹、生成日志和 API 日志，retry8 有 8 题。对应评测用于本次逐题哈希核对。
 
-本地备份中的旧 summary 保存了 prompt、summary、输入清单和完成元数据，但 `summary_result.json` 没有 token usage；备份中也未找到独立 SQLite API 账本。原始 51 题 summary 的总量来自此前发布的[账本审计结果](../results/kimi_hard51_usage_audit.json)。生成阶段 API 日志齐全不等于 summary 的逐题用量也有记录。
+旧备份中的 `summary_result.json` 没有 token usage，因此首次统计只能给出 summary 归属范围。现已重新登录原服务器，以只读方式读取独立 SQLite API 账本，保存 summary 请求记录，并结合原备份中的启动事件和完成元数据补齐逐题用量。全量与此前发布的[账本审计结果](../results/kimi_hard51_usage_audit.json)一致；本文与 README 已改为实际 Token 数值。
 
 | 本轮保留的补跑结果 | 数量 | 正常 submitted | 其他生成结束状态 |
 | --- | ---: | ---: | --- |
@@ -106,7 +119,7 @@ README 的费用上下界分别把已知分类费用、未保存分类部分的�
 
 ## 复核与重算
 
-[重算脚本](../scripts/recount_kimi_merged_usage.py)读取私有逐题选择清单、合并审计、原始 API 日志及补跑账本，校验补丁与评测后只输出聚合 JSON/CSV。公开文件不包含 API key、账号、题目 ID、提示词、轨迹、补丁或服务器路径。
+[重算脚本](../scripts/recount_kimi_merged_usage.py)读取私有逐题选择清单、合并审计、原始 API 日志、补跑账本和新取回的旧 summary 账本，校验补丁、评测与 summary 逐题归属后只输出聚合 JSON/CSV。公开文件不包含 API key、账号、题目 ID、提示词、轨迹、补丁或服务器路径。
 
 ```bash
 python3 scripts/recount_kimi_merged_usage.py \
@@ -116,7 +129,8 @@ python3 scripts/recount_kimi_merged_usage.py \
   --original-root /private/backup/TSE-Revision \
   --context-run /private/context-rerun \
   --retry-run /private/final-2h-rerun \
+  --summary-ledger /private/backup/kimi-summary-ledger.json \
   --output results/kimi_hard51_merged_usage_20261109.json
 ```
 
-输出记录三个输入审计文件的 SHA-256，以固定本次选择与统计证据。原始逐题输入保存在私有实验数据中，公共仓库的聚合文件不能单独重建实验。
+输出记录三个输入审计文件、新取回的 summary 账本以及启动事件日志的 SHA-256，以固定本次选择与统计证据。原始逐题输入保存在私有实验数据中，公共仓库的聚合文件不能单独重建实验。

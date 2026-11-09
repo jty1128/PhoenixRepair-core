@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter, defaultdict
 import csv
+from datetime import datetime
 from decimal import Decimal as D
 import hashlib
 import json
@@ -111,13 +112,93 @@ def costs(u):
     return result
 
 
-def row(label, passed, lower, upper=None):
-    upper = lower if upper is None else upper
-    token_bounds = {k: [lower.get(k, 0), upper.get(k, 0)] for k in TOKEN_KEYS}
-    lo, hi = costs(lower), costs(upper)
-    fee_bounds = {k: [str(lo[k][0]), str(hi[k][1])] for k in lo}
+def row(label, passed, usage):
+    fees = costs(usage)
+    fee_bounds = {k: [str(v) for v in bounds] for k, bounds in fees.items()}
     return dict(experiment=label, tasks=51, passed=passed,
-                token_totals_bounds=token_bounds, cost_usd_totals_bounds=fee_bounds)
+                token_totals={k: usage.get(k, 0) for k in TOKEN_KEYS},
+                cost_usd_totals_bounds=fee_bounds)
+
+
+def match_original_summaries(root, ledger_path, selected_final, original_usage):
+    """Require a unique task/response bijection; never use nearest-time guessing."""
+    database, = read(ledger_path)['databases']
+    rows = database['rows']
+    assert len({r['id'] for r in rows}) == len(rows)
+    successes = {r['id']: r for r in rows if r['status'] == 'success'}
+    assert len(successes) == 51
+    assert all(r['usage_available'] for r in successes.values())
+    assert all(not r['usage_available'] for r in rows if r['status'] != 'success')
+    directory = root/'PhoenixRepair/validation_runs/pro-v2-hard51-kimi-k2.7-code-thinking-final-sample-51-20261106/summaries'
+    metadata = {}
+    for p in directory.glob('*/summary_result.json'):
+        m = read(p)
+        assert m['status'] == 'completed' and m['attempts'] == 1
+        assert m['summary_sha256'] == digest(p.parent/'summary.txt')
+        assert m['prompt_sha256'] == digest(p.parent/'summary_prompt.txt')
+        metadata[m['instance_id']] = m
+    assert set(metadata) == set(selected_final)
+    stamp = lambda value: datetime.fromisoformat(value).timestamp()
+    candidates = {iid: [rid for rid, r in successes.items()
+                        if 0 <= stamp(m['finished_at'])-stamp(r['finished_at']) < 2]
+                  for iid, m in metadata.items()}
+    account_keys = defaultdict(set)
+    for iid, matches in candidates.items():
+        if len(matches) == 1:
+            account_keys[metadata[iid]['account']].add(successes[matches[0]]['key_id'])
+    assert all(len(keys) == 1 for keys in account_keys.values())
+    account_keys = {a: next(iter(keys)) for a, keys in account_keys.items()}
+    candidates = {iid: [rid for rid in matches if successes[rid]['key_id'] == account_keys[metadata[iid]['account']]]
+                  for iid, matches in candidates.items()}
+    matched = {}
+
+    def propagate():
+        while candidates:
+            singles = {iid: matches[0] for iid, matches in candidates.items() if len(matches) == 1}
+            if not singles:
+                break
+            assert len(set(singles.values())) == len(singles)
+            matched.update(singles)
+            used = set(singles.values())
+            for iid in singles:
+                del candidates[iid]
+            for iid in candidates:
+                candidates[iid] = [rid for rid in candidates[iid] if rid not in used]
+                assert candidates[iid], 'Conflicting summary-to-ledger evidence'
+
+    propagate()
+    completion_matches = len(matched)
+    event_path = root/'analysis/kimi_summary_final_20261106/events.jsonl'
+    starts = defaultdict(list)
+    for line in event_path.read_text().splitlines():
+        event = json.loads(line)
+        if event['kind'] == 'summary开始':
+            starts[event['instance_id']].append(event)
+    # Two completions crossed within 0.1 seconds. Their independently recorded
+    # start events are 39 seconds apart and uniquely identify the API requests.
+    for iid, matches in candidates.items():
+        events = [e for e in starts[iid] if e['account'] == metadata[iid]['account']]
+        candidates[iid] = [rid for rid in matches if any(
+            0 <= stamp(successes[rid]['started_at'])-stamp(e['time']) < 2 for e in events)]
+        assert candidates[iid], 'Ambiguous summary needs additional start evidence'
+    propagate()
+    assert not candidates and set(matched.values()) == set(successes)
+
+    def usage(r):
+        return raw_usage(dict(prompt_tokens=r['input_tokens'], completion_tokens=r['output_tokens'],
+                              total_tokens=r['total_tokens'], prompt_tokens_details={'cached_tokens': r['cached_input_tokens']}))
+
+    all_usage = total(usage(r) for r in successes.values())
+    for k in TOKEN_KEYS:
+        assert all_usage[k] == original_usage[k]
+    keep = {iid: rid for iid, rid in matched.items() if selected_final[iid]['source'] != '2h_new_final'}
+    assert len(keep) == 28
+    retained = total(usage(successes[rid]) for rid in keep.values())
+    proof = dict(original_successes=51, retained_summaries=28, replaced_summaries=23,
+                 matched_by_completion_and_account=completion_matches,
+                 additionally_matched_by_start_events=len(matched)-completion_matches,
+                 bijection_verified=True, start_events_sha256=digest(event_path))
+    return retained, proof
 
 
 def interval(values, divisor=1, places=2, currency=False):
@@ -130,7 +211,7 @@ def tables(rows):
              '| --- | ---: | ---: | ---: | ---: | ---: | ---: |']
     for r in rows:
         cells = [r['experiment'], f"{r['passed']}/51"]
-        cells += [interval(r['token_totals_bounds'][k], 51) for k in TOKEN_KEYS]
+        cells += [f"{D(r['token_totals'][k])/51:,.2f}" for k in TOKEN_KEYS]
         lines.append('| '+' | '.join(cells)+' |')
     lines += ['', '分项计费（美元 USD；区间为已记录用量的公开价估算）：', '',
               '| 实验 | 非缓存 input 费用 / task | 缓存 input 费用 / task | Output 费用 / task | 合计费用 / task | 51 题总费用 |',
@@ -147,7 +228,7 @@ def tables(rows):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('selected-results', 'merge-audit', 'original-audit', 'original-root',
-                 'context-run', 'retry-run', 'output'):
+                 'context-run', 'retry-run', 'summary-ledger', 'output'):
         parser.add_argument('--'+name, type=Path, required=True)
     args = parser.parse_args()
     selected, audit, base = map(read, (args.selected_results, args.merge_audit, args.original_audit))
@@ -226,14 +307,15 @@ def main():
         raw['requests_without_usage'] = recorded['api_attempts']-raw['requests_with_usage']
         summary.update(raw)
     assert summary['cached_input_tokens'] == 0
-    lower = total([*picked.values(), summary])
-    upper = total([lower, original['summary']])
+    retained_summary, summary_proof = match_original_summaries(
+        args.original_root, args.summary_ledger, selected['final'], original['summary'])
+    selected_full = total([*picked.values(), summary, retained_summary])
     cumulative_summary = total([summary, original['summary']])
     full = total([*cumulative.values(), cumulative_summary])
     assert full['total_tokens'] == audit['cumulative_tts_full_pipeline_usage']['total_tokens']
     assert full['requests_without_usage'] == audit['cumulative_tts_full_pipeline_usage']['requests_without_usage']
     selected_rows = [row(LABELS[n], audit['rows'][n]['passed'], picked[g]) for n, g in enumerate(STAGES[:3])]
-    selected_rows.append(row('TTS Final', audit['rows'][3]['passed'], lower, upper))
+    selected_rows.append(row('TTS Final', audit['rows'][3]['passed'], selected_full))
     result = dict(model='kimi-k2.7-code', benchmark='SWE-bench Pro v2 HARD-51', as_of='2026-11-09',
                   selected_rows=selected_rows,
                   merge=[{k: r[k] for k in ('stage', 'tasks', 'passed', 'original_passed', 'gained', 'lost', 'source_counts')}
@@ -245,12 +327,14 @@ def main():
                                                                     if not x['source'].startswith('original')))
                                                     for g in STAGES},
                   new23_summary_usage=summary, original51_summary_usage=original['summary'],
+                  retained28_original_summary_usage=retained_summary,
+                  original_summary_matching=summary_proof,
                   pricing=dict(base['pricing'], checked_date='2026-11-09'),
-                  evidence_sha256={k: digest(getattr(args, k)) for k in ('selected_results', 'merge_audit', 'original_audit')},
+                  evidence_sha256={k: digest(getattr(args, k)) for k in ('selected_results', 'merge_audit', 'original_audit', 'summary_ledger')},
                   notes=[
                       'Latest designated rerun replaces the earlier result regardless of evaluation score; not best-of selection.',
-                      'Selected TTS is merged sample1/2/3 + 23 new summaries + merged final generation + unknown share of 28 old summaries.',
-                      'Old summary allocation bounds are zero to the entire original 51-summary aggregate; no proportional allocation.',
+                      'Selected TTS is merged sample1/2/3 + 23 new summaries + merged final generation + exactly matched 28 retained original summaries.',
+                      'All 51 original successful summary responses uniquely matched to task metadata using completion times, account mapping, one-to-one constraints and start events. No proportional allocation or nearest-time guessing.',
                       'New ledgers retain token counts but not cache_type or cache creation; unknown cache priced at CNY 0.65–1.3/M, unknown uncached at CNY 6.5–8.125/M.',
                       'Noncached fee includes known explicit cache creation at CNY 8.125/M; known original cache modes priced from raw usage.',
                       'Bounds apply only to recorded usage; requests without usage may incur additional costs. Estimates are not invoices.',
@@ -263,13 +347,17 @@ def main():
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2)+'\n')
     with args.output.with_suffix('.csv').open('w', newline='') as f:
         writer = csv.writer(f, lineterminator='\n')
-        writer.writerow(['scope', 'experiment', 'passed', 'tasks', 'metric', 'lower_total', 'upper_total', 'lower_per_task', 'upper_per_task'])
+        writer.writerow(['scope', 'experiment', 'passed', 'tasks', 'metric', 'actual_total', 'actual_per_task', 'lower_cost_total', 'upper_cost_total', 'lower_cost_per_task', 'upper_cost_per_task'])
         for r in selected_rows:
-            for k, bounds in dict(r['token_totals_bounds'], **r['cost_usd_totals_bounds']).items():
-                writer.writerow(['selected', r['experiment'], r['passed'], 51, k, *bounds, *(str(D(v)/51) for v in bounds)])
+            for k, value in r['token_totals'].items():
+                writer.writerow(['selected', r['experiment'], r['passed'], 51, k, value, str(D(value)/51), '', '', '', ''])
+            for k, bounds in r['cost_usd_totals_bounds'].items():
+                writer.writerow(['selected', r['experiment'], r['passed'], 51, k, '', '', *bounds, *(str(D(v)/51) for v in bounds)])
     args.output.with_suffix('.md').write_text('### 最终保留结果\n\n'+tables(selected_rows))
     print(json.dumps({'scores': {r['experiment']: r['passed'] for r in selected_rows},
-                      'selected_tts_tokens': selected_rows[-1]['token_totals_bounds']['total_tokens'],
+                      'selected_tts_tokens': selected_rows[-1]['token_totals'],
+                      'retained28_original_summary_tokens': {k: retained_summary[k] for k in TOKEN_KEYS},
+                      'summary_matching': summary_proof,
                       'selected_tts_usd': selected_rows[-1]['cost_usd_totals_bounds']['total_usd']}, indent=2))
 
 
