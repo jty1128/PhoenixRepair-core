@@ -77,7 +77,7 @@ Qwen-3.7 Plus 分项计费（美元 USD）：
 
 ### 生成预算与监督阶段的规则
 
-每个任务最多执行 **200 次模型 API 调用**，用于生成首次提交补丁 P0。根据定位候选数量分配可用 API 调用次数，并将候选阶段未使用的 API 调用次数转给最终生成阶段。**定位采用独立预算，不占这 200 次 API 调用**；可通过 `--locations` 复用已有的同模型定位。这里统计的是模型 API 请求次数，不是 token 数、费用或工具执行次数。
+每个任务最多执行 **200 次模型 API 调用**，根据定位候选数量分配可用 API 调用次数，并将候选阶段未使用的 API 调用次数转给最终生成阶段。**定位采用独立预算，不占这 200 次 API 调用**；可通过 `--locations` 复用已有的同模型定位。这里统计的是模型 API 请求次数，不是 token 数、费用或工具执行次数。
 
 1. **单候选**：author 直接生成 P0，最多使用 200 次 API 调用，不执行 summary 或额外的 final 阶段。
 2. **多候选**：候选生成共分配 100 次 API 调用，尽量平均分配；不能整除的剩余 API 调用次数依次分给前面的候选。例如，两个候选各 50 次，三个候选分别为 34 / 33 / 33 次。
@@ -106,21 +106,27 @@ final 可用 API 调用次数 = 200 - 所有候选已计入预算的 API 调用�
 
 | 参数 | GLM-5.2 P0 |
 | --- | --- |
-| API 模型 / 协议 | `glm-5.2` / DashScope OpenAI-compatible Chat Completions |
-| Thinking / temperature / top_p | `false` / `0.0` / `1.0` |
-| author 工具选择 | `required` |
-| 单次最大输出 | **32,768 tokens**；author 和 P0 summary 一致 |
+| Thinking / temperature / top_p | `enable_thinking=false`  / `0.0` / `1.0` |
+| tool_choice | `tool_choice=requiredrequired` |
+| 每次模型相应的最大输出长度 | **32,768 tokens**；author 和 P0 summary 一致 |
 | 输入上限 | 131,072 tokens |
 | 上下文压缩 | 输入超过 120,000 时，目标 110,000；保留首尾各 5 轮 |
-| P0 总调用 / 单条轨迹步数上限 | 200 次共享调用 / 200 步 |
-| 单个 author 阶段累计时限 | 7,200 秒；恢复不重置；多候选各阶段依次执行 |
-| 单次 author API 超时 | 240 秒 |
-| author API 重试 | 最多 8 次尝试，包含首次；退避 10–120 秒；SDK `num_retries=0` |
+| P0 总调用 / 单条轨迹步数上限 | 200 次调用 / 200 steps |
+| 每一个生成补丁阶段 | 7,200 秒；恢复不重置；多候选各阶段依次执行 |
+| API 超时 | 240 秒 |
+| API 重试 | 最多 8 次尝试，包含首次；退避 10–120 秒；SDK `num_retries=0` |
 | P0 summary | 最多 1 次请求；temperature=0，top_p=1；连接/读取超时 30/240 秒 |
 
-输入上限为 131,072，输出上限为每次响应 32,768。P0 共享调用上限来自 `max_steps: 200`，输出上限来自 `phoenix/settings.py` 中 GLM 的模型配置；author 和 P0 summary 读取同一个值。本版本保留实验源码的接口，不提供额外的 `p0_call_budget` 或 `max_output_tokens` 配置项。
+summary 仅在多候选时运行，作用是比较当前任务生成的候选补丁，提供最终生成指导；它不是官方评测器，也不证明被推荐的方案正确。
+当前设置如下：
 
-### 2026-11-08 的代码修复
+- 使用同一 `glm-5.2`，thinking 关闭。
+- `temperature=0`、`top_p=1`、输出上限 32,768 tokens。
+- 连接超时 30 秒，读取超时 240 秒。
+
+输入上限为 131,072，输出上限为每次响应 32,768。P0 调用上限来自 `max_steps: 200`，输出上限来自 `phoenix/settings.py` 中 GLM 的模型配置。
+
+### 对执行过程中api调用异常的恢复
 
 - **API 超时和连接异常**：P0 对超时、连接中断及 HTTP 408/429/5xx 原地重试，单次 query 最多尝试 8 次；认证、参数、证书错误直接停止该生成。Single/TTS 的 query 上限保留 20 次。
 - **耗尽重试的处理**：保存 `api-interrupted.patch`、错误类型与补丁哈希以及完整轨迹，标记 `exit_api`；不会把未完成代码自动提交为成功 P0，也不会开始后续审查。快照包含未跟踪文件，使用独立临时 Git index，保留原暂存区。
@@ -137,17 +143,7 @@ final 可用 API 调用次数 = 200 - 所有候选已计入预算的 API 调用�
 bash our_method.sh --instances /path/to/instances.json --runtime /path/to/runtime \
   --stage patch --locations /path/to/frozen-locations --output runs/glm-p0-200calls-32k
 
-# 显式选择参数并复用同模型定位；输入和运行时由使用者提供。
-bash our_method.sh --config configs/experiments/glm-5.2-p0-200calls-32k.yaml \
-  --instances /path/to/instances.json --runtime /path/to/runtime \
-  --stage patch --locations /path/to/frozen-locations --dry-run
-```
-
-密钥通过本机 `PHOENIX_API_KEY` 或 `.env` 提供。省略 `--stage patch --locations ...` 会重新定位。公开入口生成 P0，不启动官方评测；评测需另行使用对应基准的官方工具。更改参数时使用新输出目录，不能通过 `--resume` 重置预算。
-
 ## 方法入口
-
-包含三种方法的核心代码、参数配置、运行说明、合成测试及 README 中的聚合成绩，基于 SWE-agent / SWE-ReX。任务数据、逐题结果、用量统计文件、轨迹、生成补丁、日志、API 密钥和机器专用配置均保留在本机，不纳入提交。
 
 | 入口 | 方法 |
 | --- | --- |
@@ -183,24 +179,6 @@ python -m phoenix.runtime check --output "$PWD/.runtime"
 ```
 
 准备过程下载独立 Python 3.11 和工具依赖，因此需要联网。生成时只把工具运行时挂入容器，不替换任务仓库自己的 Python/Node/Go 环境。`.runtime` 不上传 Git。
-
-## 任务清单
-
-`INSTANCES` 指向用户自行准备的 JSON 数组或 JSONL。每题只使用以下五个字段；其他字段不会传给模型：
-
-```json
-[
-  {
-    "instance_id": "your-task-id",
-    "problem_statement": "Original issue description and requirements",
-    "base_commit": "the-original-commit-sha",
-    "repo_name": "app",
-    "image_name": "your-prepared-task-image:tag"
-  }
-]
-```
-
-镜像中仓库路径为 `/<repo_name>`。生成前会在容器内隔离 Git 历史；定位只读取经 base checkout 校验导出的当前源码，不运行测试或生成 patch。
 
 ## 运行
 
