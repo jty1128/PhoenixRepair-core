@@ -393,6 +393,38 @@ def test_localization_transport_resume_preserves_five_attempt_cap(tmp_path, monk
         localization.call_api(NoRequests(), "https://example.invalid", "synthetic-key", {"model": "glm-5.2"}, tmp_path)
 
 
+def test_stop_owned_skips_unrelated_processes_and_rechecks_pid_identity(monkeypatch):
+    from phoenix import run_state
+
+    alive = iter([True, False])
+    monkeypatch.setattr(run_state, "owned_alive", lambda record: next(alive))
+    monkeypatch.setattr(Path, "glob", lambda self, pattern: [Path('/proc') / str(pid) for pid in (10, 100, 101, 102, 103)])
+    identities = {
+        10: iter([dict(pgid=10, state='S', start_ticks='kernel')]),
+        100: iter([dict(pgid=100, state='S', start_ticks='owner')] * 2),
+        101: iter([dict(pgid=100, state='Z', start_ticks='zombie')]),
+        102: iter([None]),
+        103: iter([dict(pgid=100, state='S', start_ticks='before'),
+                   dict(pgid=100, state='S', start_ticks='reused')]),
+    }
+    monkeypatch.setattr(run_state, "process_identity", lambda pid: next(identities[pid]))
+    opened, closed, signalled = [], [], []
+
+    def pidfd_open(pid):
+        if pid == 10:
+            raise OSError(22, 'Invalid argument for an unrelated kernel task')
+        opened.append(pid)
+        return pid + 1000
+
+    monkeypatch.setattr(run_state.os, "pidfd_open", pidfd_open)
+    monkeypatch.setattr(run_state.os, "close", closed.append)
+    monkeypatch.setattr(run_state.signal, "pidfd_send_signal", lambda handle, sig: signalled.append((handle, sig)))
+    run_state.stop_owned(dict(pid=100, start_ticks='owner'), grace=0)
+    assert opened == [100, 103]
+    assert signalled == [(1100, run_state.signal.SIGTERM), (1100, run_state.signal.SIGKILL)]
+    assert closed == [1103, 1100]
+
+
 def test_stop_owned_rejects_reused_identity_then_stops_only_owned_process():
     from phoenix.run_state import process_identity, stop_owned
     child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], start_new_session=True)

@@ -68,9 +68,12 @@ def stop_owned(record, grace=10):
     for path in Path('/proc').glob('[0-9]*'):
         child = int(path.name)
         try:
-            handle = os.pidfd_open(child)
             ident = process_identity(child)
-            if ident and ident['pgid'] == pid:
+            if not ident or ident['pgid'] != pid or ident['state'] == 'Z':
+                continue
+            handle = os.pidfd_open(child)
+            current = process_identity(child)
+            if current and current['pgid'] == pid and current['start_ticks'] == ident['start_ticks']:
                 handles.append(handle)
             else:
                 os.close(handle)
