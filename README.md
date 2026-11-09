@@ -263,6 +263,43 @@ bash our_method.sh --model glm-5.2 --output runs/glm-p0 \
   --concurrency 12 --adaptive-io --io-device YOUR_BLOCK_DEVICE
 ```
 
+### GLM / Qwen 专用启动脚本
+
+以下入口自动选择对应模型的配置，默认均为 4 并发；参数继续传给通用脚本。先按安装说明准备依赖、Docker、任务镜像，并在本机 `.env` 中填写 `PHOENIX_API_KEY`、`INSTANCES`、`PHOENIX_RUNTIME`，API 地址使用 `API_BASE`。
+
+| 方法 | GLM-5.2 | Qwen-3.7 Plus |
+| --- | --- | --- |
+| 单个 sample | [run_glm_single.sh](run_glm_single.sh) | [run_qwen_single.sh](run_qwen_single.sh) |
+| 三个 samples → summary → final | [run_glm_tts.sh](run_glm_tts.sh) | [run_qwen_tts.sh](run_qwen_tts.sh) |
+| Our Method：定位 → P0 | [run_glm_our_method.sh](run_glm_our_method.sh) | [run_qwen_our_method.sh](run_qwen_our_method.sh) |
+
+```bash
+# GLM-5.2：按需要选择一种方法运行
+bash run_glm_single.sh --output runs/glm-single-new
+bash run_glm_tts.sh --output runs/glm-tts-new
+bash run_glm_our_method.sh --output runs/glm-p0-new
+
+# Qwen-3.7 Plus：按需要选择一种方法运行
+bash run_qwen_single.sh --output runs/qwen-single-new
+bash run_qwen_tts.sh --output runs/qwen-tts-new
+bash run_qwen_our_method.sh --output runs/qwen-p0-new
+
+# 独立生成 Sample 1/2/3 时分别指定新的输出目录
+bash run_glm_single.sh --output runs/glm-sample-2-new
+bash run_glm_single.sh --output runs/glm-sample-3-new
+
+# GLM P0 复用已保存的同模型定位
+bash run_glm_our_method.sh --stage patch \
+  --locations /path/to/frozen-locations --output runs/glm-p0-from-locations-new
+
+# 只校验输入和参数，不调用模型或启动容器
+bash run_qwen_single.sh --output runs/qwen-single-check --dry-run
+```
+
+TTS 入口自行生成三个 samples，随后执行 summary 和 final；上述 Single 输出不会自动作为 TTS 输入。断点恢复使用原命令加 `--resume`，保持原配置及输出目录。
+
+这些入口使用当前仓库快照：GLM P0 为 200 次共享调用、32,768 输出；当前 Qwen P0 配置也为 200 次。README 中 Qwen 的历史 P0 成绩来自 160 次预算的历史实验，当前启动脚本不等同于该历史实验的原样复现。原有 [run_single.sh](run_single.sh)、[run_tts.sh](run_tts.sh)、[our_method.sh](our_method.sh) 及模型配置仍可直接使用，新增入口仅选择配置，未修改实验生成逻辑。
+
 ## 模型配置与恢复
 
 代码和模型配置统一维护在 `main`，`reproduce/glm-5.2` 同步当前代码及 GLM 默认配置。各模型配置在下列目录中，使用 `--config` 选择即可；也可用 `--model` 覆盖模型，但其余配置仍来自所选配置文件。
