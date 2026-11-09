@@ -9,7 +9,7 @@ import sys
 import pytest
 
 from phoenix import summary
-from phoenix.pipeline import run_task
+from phoenix.pipeline import run_task, task_jobs
 from phoenix.settings import ROOT, load_settings, write_json
 from phoenix.worker import build_config, prepare_tools
 
@@ -28,7 +28,7 @@ def test_current_glm_cli_and_rendered_worker(tmp_path, task, candidate, configur
     assert result.returncode == 0, result.stderr
     plan = json.loads(result.stdout)
     settings = plan["settings"]
-    assert plan["p0_shared_call_limit"] == 200
+    assert task_jobs("our_method", max_calls=settings["max_steps"])[0]["allowance"] == 200
     assert plan["model_profile"]["max_tokens"] == 32768
     assert settings["concurrency"] == 4
     settings.update(runtime=str(tmp_path / "runtime"), output=str(tmp_path / "output"))
@@ -48,7 +48,6 @@ def test_current_glm_cli_and_rendered_worker(tmp_path, task, candidate, configur
 
 @pytest.mark.parametrize("upstream,final_allowance", [([], 200), ([50, 50], 99), ([3, 3], 193), ([34, 33, 33], 99)])
 def test_full_budget_includes_summary_and_transfers_savings(tmp_path, task, candidate, settings, upstream, final_allowance):
-    settings.update(p0_call_budget=200, max_output_tokens=32768)
     candidates = []
     for i in range(len(upstream) or 1):
         value = copy.deepcopy(candidate)
@@ -80,7 +79,6 @@ def test_full_budget_includes_summary_and_transfers_savings(tmp_path, task, cand
 
 
 def test_current_p0_summary_uses_same_output_and_budget_guidance(tmp_path, monkeypatch, task, settings):
-    settings.update(p0_call_budget=200, max_output_tokens=32768)
     requests = []
 
     class Session:
@@ -107,20 +105,9 @@ def test_current_p0_summary_uses_same_output_and_budget_guidance(tmp_path, monke
     assert "Independent review follows" not in payload["messages"][0]["content"]
 
 
-@pytest.mark.parametrize("overrides", [{"p0_call_budget": 201}, {"p0_call_budget": True},
-                                      {"max_output_tokens": 0}, {"max_output_tokens": True}])
-def test_invalid_new_limits_fail_before_requests(tmp_path, overrides):
+@pytest.mark.parametrize("unsupported", ["p0_call_budget: 200", "max_output_tokens: 32768"])
+def test_experiment_snapshot_rejects_non_snapshot_configuration(tmp_path, unsupported):
     config = tmp_path / "config.yaml"
-    config.write_text("model: glm-5.2\n")
-    with pytest.raises(ValueError):
-        load_settings("our_method", config, overrides)
-
-
-def test_explicit_intermediate_budget_reaches_author_prompt(tmp_path, task, candidate, settings):
-    settings.update(p0_call_budget=180)
-    request = dict(task=task, settings=settings, stage_dir=str(tmp_path / "stage"),
-        base_agent=prepare_tools(tmp_path)["agent"], port=54321, run_id="fixture", job_id="one",
-        candidate=candidate)
-    config, _ = build_config(request)
-    prompt = config["agent"]["templates"]["instance_template"]
-    assert "All 180 model calls are shared" in prompt and "Reserve 40 calls" not in prompt
+    config.write_text("model: glm-5.2\n" + unsupported + "\n")
+    with pytest.raises(ValueError, match="Unknown configuration fields"):
+        load_settings("our_method", config, {})

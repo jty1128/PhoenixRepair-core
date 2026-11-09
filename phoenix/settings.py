@@ -61,12 +61,6 @@ def load_instances(path: Path, selected=(), limit=0):
     return clean[:limit] if limit else clean
 
 
-def p0_budget(settings):
-    """Shared candidate/summary/final budget; absent override retains the legacy reservation."""
-    configured = settings.get("p0_call_budget")
-    return configured if configured is not None else settings.get("max_steps", 200) - 40
-
-
 def model_config(model, api_base, *, p0=False, context_settings=None):
     profile = PROFILES[model]
     data = {
@@ -89,8 +83,6 @@ def model_config(model, api_base, *, p0=False, context_settings=None):
         data["request_min_interval"] = 2
     data.update({k: context_settings[k] for k in CONTEXT_DEFAULTS
                  if context_settings and k in context_settings})
-    if context_settings and context_settings.get("max_output_tokens") is not None:
-        data["completion_kwargs"]["max_tokens"] = context_settings["max_output_tokens"]
     return data
 
 
@@ -100,7 +92,7 @@ def load_settings(mode, config_path, overrides):
                "task_timeout", "locations", "stage", "docker_host", "container_cpus", "container_memory",
                "localization_max_steps", "localization_timeout", "adaptive_io", "io_device",
                "environment_start_concurrency", "local_command_concurrency", "pin_cpus",
-               "submission_recovery_timeout", "p0_call_budget", "max_output_tokens", *CONTEXT_DEFAULTS}
+               "submission_recovery_timeout", *CONTEXT_DEFAULTS}
     if set(data) - allowed:
         raise ValueError("Unknown configuration fields: " + ", ".join(sorted(set(data) - allowed)))
     data.update({k: v for k, v in overrides.items() if v is not None})
@@ -140,14 +132,6 @@ def load_settings(mode, config_path, overrides):
             raise ValueError("Require compaction target <= threshold < max_input_tokens")
     if not 1 <= data["max_steps"] <= 200:
         raise ValueError("max_steps must be between 1 and 200")
-    if data.get("max_output_tokens") is not None:
-        if type(data["max_output_tokens"]) is not int or data["max_output_tokens"] < 1:
-            raise ValueError("max_output_tokens must be a positive integer")
-    if data.get("p0_call_budget") is not None:
-        if mode != "our_method":
-            raise ValueError("p0_call_budget only applies to our_method")
-        if type(data["p0_call_budget"]) is not int or not 1 <= data["p0_call_budget"] <= data["max_steps"]:
-            raise ValueError("p0_call_budget must be an integer between 1 and max_steps")
     if not 1 <= data["localization_max_steps"] <= 200:
         raise ValueError("localization_max_steps must be between 1 and 200")
     if data.get("localization_timeout") is not None and data["localization_timeout"] <= 0:

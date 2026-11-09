@@ -6,6 +6,5 @@ output: runs/glm-5.2-tts
 concurrency: 4
 samples: 3
 max_steps: 200
-max_output_tokens: 8192  # Original GLM single/TTS generation profile.
 task_timeout: null
 api_base: null

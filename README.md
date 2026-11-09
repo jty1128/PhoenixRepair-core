@@ -2,7 +2,9 @@
 
 ## 当前 GLM-5.2 代码与参数（2026-11-09）
 
-`main` 和 `reproduce/glm-5.2` 同步方法代码。默认 `bash our_method.sh`、`configs/models/glm-5.2/our_method.yaml` 和[显式配置](configs/experiments/glm-5.2-p0-200calls-32k.yaml) 均设置 **GLM-5.2、每题 200 次共享调用、32,768 输出上限、4 并发**。
+`main` 和 `reproduce/glm-5.2` 同步实际执行 GLM P0 实验的源码快照。运行源码、提示词、工具及依赖声明与本机保存的实验快照逐文件一致。默认 `bash our_method.sh`、`configs/models/glm-5.2/our_method.yaml` 和[显式配置](configs/experiments/glm-5.2-p0-200calls-32k.yaml) 使用 **GLM-5.2、每题 200 次共享调用、32,768 输出上限、4 并发**。
+
+公开配置使用可移植的输入、运行时和输出路径；数据由使用者提供。要使用当次生成的相同输入，须通过 `--stage patch --locations ...` 传入同一份任务清单和同模型定位，并使用相同任务镜像与模型服务。默认重新定位会产生新的生成输入。源码一致不等于已经重新验证同一数值成绩；本次同步只做离线和合成流程验证，不调用模型重新评分。
 
 ### 生成预算与监督阶段
 
@@ -36,7 +38,7 @@
 | 每个生成容器资源 | 2 CPU、6 GiB 内存 |
 | 独立 reviewer / repair / recheck | 0 / 0 / 0 |
 
-输入上限为 131,072，输出上限为每次响应 32,768。`p0_call_budget` 与 `max_output_tokens` 已接入配置、命令行、author、P0 summary 和 `--resume` 的配置一致性检查。
+输入上限为 131,072，输出上限为每次响应 32,768。P0 共享调用上限来自 `max_steps: 200`，输出上限来自 `phoenix/settings.py` 中 GLM 的模型配置；author 和 P0 summary 读取同一个值。本版本保留实验源码的接口，不提供额外的 `p0_call_budget` 或 `max_output_tokens` 配置项。
 
 ### 2026-11-08 的代码修复
 
@@ -44,7 +46,7 @@
 - **耗尽重试的处理**：保存 `api-interrupted.patch`、错误类型与补丁哈希以及完整轨迹，标记 `exit_api`；不会把未完成代码自动提交为成功 P0，也不会开始后续审查。快照包含未跟踪文件，使用独立临时 Git index，保留原暂存区。
 - **断点恢复**：可重试 API 故障在仍有调用、步数、时间余额时，最多额外进行一次阶段恢复，载入保存的代码和轨迹。若无法保存快照，保留原容器。`--resume` 沿用原输入、模型、预算和已用计数，不重新开始一份预算。
 - **预算计数**：每次内部传输尝试前持久化计数，失败、重试以及已发出但结果未知的请求均占额度。最后一次额度消耗在失败请求上时，仍记录为 API 中断，不能转换为正常预算提交。
-- **上下文和输出配置**：输入上限、压缩阈值、压缩目标、输出上限和 P0 调用预算均可显式设置，恢复时检查一致性。当前 GLM 默认值与上表及显式配置一致。
+- **上下文配置**：输入上限、压缩阈值和压缩目标可显式设置，恢复时检查一致性。调用预算使用 `max_steps`，输出上限使用实验源码中的模型配置。当前 GLM 参数与上表及显式配置一致。
 
 代码位于[模型请求与重试](sweagent/agent/models.py)、[API 错误分类与快照](sweagent/agent/api_errors.py)、[中断状态处理](sweagent/agent/agents.py)、[恢复执行器](phoenix/backend.py)、[持久化状态](phoenix/run_state.py)、[生成与计数](phoenix/worker.py)、[预算调度](phoenix/pipeline.py)及[参数加载](phoenix/settings.py)。测试使用合成错误和补丁，覆盖第八次成功、重试耗尽、最后一次额度失败、恢复后的预算连续性及不进入审查。
 
@@ -61,7 +63,7 @@ bash our_method.sh --config configs/experiments/glm-5.2-p0-200calls-32k.yaml \
   --stage patch --locations /path/to/frozen-locations --dry-run
 ```
 
-密钥通过本机 `PHOENIX_API_KEY` 或 `.env` 提供。省略 `--stage patch --locations ...` 会重新定位。公开入口不启动官方评测。旧的 160-call P0 可显式传入 `--p0-call-budget 160`；模型输出上限另用 `--max-output-tokens` 设置，变更后使用新输出目录。
+密钥通过本机 `PHOENIX_API_KEY` 或 `.env` 提供。省略 `--stage patch --locations ...` 会重新定位。公开入口生成 P0，不启动官方评测；评测需另行使用对应基准的官方工具。更改参数时使用新输出目录，不能通过 `--resume` 重置预算。
 
 ## 方法入口
 
@@ -165,8 +167,8 @@ bash our_method.sh --model glm-5.2 --output runs/glm-p0 \
 
 | 配置目录 | 默认模型 | 配置说明 |
 | --- | --- | --- |
-| [configs/models/glm-5.2](configs/models/glm-5.2) | GLM-5.2 | P0：200 次共享调用、32,768 输出；single/TTS：8,192 输出 |
-| [configs/models/qwen3.7-plus](configs/models/qwen3.7-plus) | Qwen-3.7 Plus | 支持 single/TTS/P0；P0 保留 160 次共享调用配置 |
+| [configs/models/glm-5.2](configs/models/glm-5.2) | GLM-5.2 | P0：200 次共享调用、32,768 输出 |
+| [configs/models/qwen3.7-plus](configs/models/qwen3.7-plus) | Qwen-3.7 Plus | 支持 single/TTS/P0，使用当前快照的 P0 调度 |
 | [configs/models/kimi-k2.7-code](configs/models/kimi-k2.7-code) | Kimi K2.7 Code | 支持 single/TTS；无 P0 配置 |
 
 ```bash
@@ -175,13 +177,13 @@ bash our_method.sh --config configs/models/qwen3.7-plus/our_method.yaml
 bash run_single.sh --config configs/models/kimi-k2.7-code/single.yaml
 ```
 
-GLM 的 `our_method.yaml` 已更新为 200 calls / 32K；其 `single.yaml` 和 `tts.yaml` 显式保留历史 8,192 输出配置。Qwen/Kimi 继续使用各自配置；Kimi 的 `our_method.yaml` 明确拒绝运行。根目录下三个 bash 入口及默认配置继续可用。
+本提交固定为 GLM 200 calls / 32K 实验源码；GLM 的 single/TTS author 也读取该快照中的 32,768 输出配置，TTS summary 的输出上限单独列于下文。其他模型保留切换入口，但当前提交不代表它们各自历史实验的源码版本。Kimi 的 `our_method.yaml` 明确拒绝运行。
 
 `phoenix/recovery_profiles.py` 明确记录模型差异。GLM/Qwen 的 Single/TTS 在 7,140 秒停止生成，预留 60 秒提取当前补丁；Kimi 保留完整 3,000 秒生成时限，之后另用最多 60 秒提取。Kimi 保留 thinking/reasoning 回传。各模型的请求超时、输出上限和 summary 重试规则见下表及后文，不会在恢复时替换模型。
 
 已移植镜像检查与固定 digest、环境启动重试、运行时兼容修复、命令/启动 I/O 闸门、可选自适应准入、超时补丁提取、轨迹续跑、跨容器提交重放和测试文件清理。提交重放只验证原补丁的文件内容与权限；没有新增模型审核、P1 或按题目定制的修复逻辑。
 
-**TTS 与 P0 的预算单位不同，但都不因恢复重置。** TTS 的每个 sample/final 各自最多 200 步，summary 另有有界次数；P0 的候选、summary 和 final 共用 `p0_call_budget`。当前 GLM 为 200 次，历史配置为 160 次。若已用 100 次，当前版本最多再用 100 次，历史版本最多再用 60 次。未知请求仍计入消耗；重放/校验本身不调用模型。[完整恢复规则和验证方式](docs/recovery.md)。
+**TTS 与 P0 的预算单位不同，但都不因恢复重置。** TTS 的每个 sample/final 各自最多 200 步，summary 另有有界次数；P0 的候选、summary 和 final 共用 200 次调用。若已用 100 次，最多再用 100 次。未知请求仍计入消耗；重放/校验本身不调用模型。[完整恢复规则和验证方式](docs/recovery.md)。
 
 ## P0 的准确含义
 
@@ -189,8 +191,8 @@ GLM 的 `our_method.yaml` 已更新为 200 calls / 32K；其 `single.yaml` 和 `
 
 - 使用完整策略定位流程；每个候选应形成完整方案，并与原始需求对应。
 - 生成时把定位视为待验证的建议，以原始 issue 为准；检查调用方、关联行为、边界情况和实际 diff。
-- 当前 200-call 配置使用完整生成预算提示，删除原 40 次审查预留说明；历史 160-call 配置继续保留历史提示。本入口在首次提交后结束，**不调用审核模型，不进行审查后的修复，不选择 P1**。
-- 当前单候选最多 200 次；多候选共用前 100 次，summary 一次，final 至少 99 次并继承上游节省的额度。历史 160-call 配置的 final 初始额度为 59 次。定位单独使用 150 步；`--localization-max-steps` 可显式调整，最多 200 步。
+- 使用实际实验中的完整生成预算提示，已删除原 40 次审查预留说明。本入口在首次提交后结束，**不调用审核模型，不进行审查后的修复，不选择 P1**。
+- 单候选最多 200 次；多候选共用前 100 次，summary 一次，final 至少 99 次并继承上游节省的额度。定位单独使用 150 步；`--localization-max-steps` 可显式调整，最多 200 步。
 - 提交阶段只执行确定性的补丁校验；如仅混入测试文件修改，保留原稿并排除测试 hunks，不改变生产代码 hunks，不产生额外模型请求。
 
 也可通过 `--locations` 复用自己已有的同模型定位。目录必须含 `instances.json`，以及 `<model>/<instance_id>/location_candidates.json` 和 `report.json`；会检查题目、base commit、模型及候选完整性。定位输入由使用者自行准备，仓库不携带定位数据。
@@ -216,7 +218,7 @@ API 重试耗尽时保存 `api-interrupted.patch` 和轨迹，标记 `exit_api`�
 
 TTS summary 使用同一个模型，temperature=0.7、top_p=1。GLM/Qwen 输出上限为 8,192、请求超时为 120 秒；每轮最多 5 次传输尝试，格式不合格或传输耗尽后最多进行 3 轮，总上限为 15 次请求。GLM/Qwen 沿用历史格式校验：接受普通或加粗标题，以及带方括号的样本序号；必须包含 `BEST_SAMPLE`、`REASONING:`、`INSIGHTS FOR NEXT ATTEMPT:`，且总结至少 100 字符。Kimi 输出上限为 32,768、超时为 240 秒；每轮最多 3 次传输尝试，耗尽即停止；格式不合格最多 3 轮，并拒绝截断的 summary。
 
-P0 多候选 summary 使用同模型、temperature=0、top_p=1；输出上限跟随 `max_output_tokens`，当前 GLM 为 32,768、读取超时 240 秒，Qwen 为 32,768、600 秒，连接超时均为 30 秒。受共享预算限制只调用一次，读取完整候选 diff，要求对照原始 issue、保留不确定性、避免合并不兼容方案；200-call 配置明确剩余预算用于最终 P0 生成。与 author 共用最短 2 秒的账户/模型请求间隔。非空 summary 交给 final，不使用 TTS 的额外格式门槛；单候选不经过 summary。
+P0 多候选 summary 使用同模型、temperature=0、top_p=1；输出上限读取 `phoenix/settings.py` 中的模型配置，当前 GLM 为 32,768、读取超时 240 秒，Qwen 为 32,768、600 秒，连接超时均为 30 秒。受共享预算限制只调用一次，读取完整候选 diff，要求对照原始 issue、保留不确定性、避免合并不兼容方案；明确剩余预算用于最终 P0 生成。与 author 共用最短 2 秒的账户/模型请求间隔。非空 summary 交给 final，不使用 TTS 的额外格式门槛；单候选不经过 summary。
 
 GLM/Qwen 支持三个入口；Kimi 支持 single/TTS。模型支持情况取决于你的服务商账号，不会用另一模型自动替代。
 

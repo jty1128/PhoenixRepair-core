@@ -34,7 +34,6 @@ def candidate():
 def settings(tmp_path):
     from phoenix.settings import ROOT, load_settings
     # Synthetic P0 fixtures are independent of the checked-out model branch.
-    result = load_settings("our_method", ROOT / "configs/our_method.yaml", {"model": "glm-5.2", "p0_call_budget": 160})
-    result.pop("max_output_tokens", None)  # Legacy workflow tests use the selected model profile.
+    result = load_settings("our_method", ROOT / "configs/our_method.yaml", {"model": "glm-5.2"})
     result.update(output=str(tmp_path / "output"), runtime=str(tmp_path / "runtime"))
     return result

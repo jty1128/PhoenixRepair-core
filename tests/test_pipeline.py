@@ -35,7 +35,7 @@ def test_pipeline_outputs_only_requested_generation(mode, count, task, candidate
     assert result["review_calls"] == result["repair_calls"] == 0
     assert not result["benchmark_evaluated"]
     if mode == "our_method":
-        assert backend.calls[0]["allowance"] == 160
+        assert backend.calls[0]["allowance"] == 200
         assert backend.calls[0]["candidate"] == candidate
         assert not summaries
         assert result["output_stage"] == "P0"
@@ -58,7 +58,7 @@ def test_multicandidate_shared_budget_and_fresh_final(task, candidate, settings)
 
     result = run_task(task, settings, backend, "synthetic-key", [candidate, second], summary_fn=summary)
     assert result["status"] == "completed"
-    assert [x["allowance"] for x in backend.calls] == [50, 50, 153]
+    assert [x["allowance"] for x in backend.calls] == [50, 50, 193]
     assert backend.calls[-1]["candidate"] is None
     assert backend.calls[-1]["summary"]
     assert result["model_calls"] == 10  # Three authors x 3, plus one summary.

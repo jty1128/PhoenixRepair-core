@@ -6,8 +6,6 @@ runtime: null
 output: runs/our-method-p0
 concurrency: 4
 max_steps: 200
-p0_call_budget: 200
-max_output_tokens: 32768
 max_input_tokens: 131072
 context_compaction_threshold: 120000
 context_compaction_target: 110000
