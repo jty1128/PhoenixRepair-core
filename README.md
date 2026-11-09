@@ -20,12 +20,15 @@
 - **TTS Final**：三个 samples＋同模型 summary＋final 生成的完整流程成本，不是只计算最后一段生成。
 - **Our Method · P0**：定位＋候选生成＋必要的 summary＋首次 P0 提交前的 final 生成，包含复用定位原本的成本。
 
-按阿里云百炼北京地域在线调用公开价格估算， 下列单价及费用统一使用 **美元（USD）**。沿用本次审计的固定汇率 **1 USD = 6.7168 CNY** 将人民币公开价除以 6.7168 换算。Qwen 本表请求均已核对为单次输入 ≤256K，采用隐式缓存价格。
+按阿里云百炼北京地域在线调用公开价格估算，下列单价及费用统一使用 **美元（USD）**。沿用本次审计的固定汇率 **1 USD = 6.7168 CNY** 将人民币公开价除以 6.7168 换算。Qwen 本表请求均已核对为单次输入 ≤256K，采用隐式缓存价格。
 
 | 模型 | 非缓存 input（USD / 百万 tokens） | 缓存命中 input（USD / 百万 tokens） | Output（USD / 百万 tokens） |
 | --- | ---: | ---: | ---: |
 | [GLM-5.2](https://help.aliyun.com/zh/model-studio/glm-5-2) | $1.1910 | $0.2978 | $4.1687 |
 | [Qwen-3.7 Plus（输入 ≤256K）](https://help.aliyun.com/zh/model-studio/qwen3-7-plus) | $0.2978 | $0.0596 | $1.1910 |
+| [Kimi K2.7 Code](https://help.aliyun.com/zh/model-studio/kimi-k2-7-code) | 普通输入 $0.9677<br>显式缓存创建 $1.2097 | 隐式缓存 $0.1935<br>显式缓存 $0.0968 | $4.0198 |
+
+Kimi 的显式缓存创建费用计入非缓存 input 费用。表中美元单价保留四位小数，费用计算使用未四舍五入的换算单价。
 
 ```text
 非缓存 input = input - 缓存命中 input
