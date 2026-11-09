@@ -107,8 +107,8 @@ final 可用 API 调用次数 = 200 - 所有候选已计入预算的 API 调用�
 | 参数 | GLM-5.2 P0 |
 | --- | --- |
 | Thinking / temperature / top_p | `enable_thinking=false`  / `0.0` / `1.0` |
-| tool_choice | `tool_choice=requiredrequired` |
-| 每次模型相应的最大输出长度 | **32,768 tokens**；author 和 P0 summary 一致 |
+| tool_choice | `tool_choice=required` |
+| 每次模型响应的最大输出长度 | **32,768 tokens**；author 和 P0 summary 一致 |
 | 输入上限 | 131,072 tokens |
 | 上下文压缩 | 输入超过 120,000 时，目标 110,000；保留首尾各 5 轮 |
 | P0 总调用 / 单条轨迹步数上限 | 200 次调用 / 200 steps |
@@ -142,6 +142,7 @@ summary 仅在多候选时运行，作用是比较当前任务生成的候选补
 # main 与 reproduce/glm-5.2 均使用当前 GLM P0 默认值。
 bash our_method.sh --instances /path/to/instances.json --runtime /path/to/runtime \
   --stage patch --locations /path/to/frozen-locations --output runs/glm-p0-200calls-32k
+```
 
 ## 方法入口
 
@@ -315,7 +316,7 @@ TTS summary 使用同一个模型，temperature=0.7、top_p=1。GLM/Qwen 输出�
 
 P0 多候选 summary 使用同模型、temperature=0、top_p=1；输出上限读取 `phoenix/settings.py` 中的模型配置，当前 GLM 为 32,768、读取超时 240 秒，Qwen 为 32,768、600 秒，连接超时均为 30 秒。受共享预算限制只调用一次，读取完整候选 diff，要求对照原始 issue、保留不确定性、避免合并不兼容方案；明确剩余预算用于最终 P0 生成。与 author 共用最短 2 秒的账户/模型请求间隔。非空 summary 交给 final，不使用 TTS 的额外格式门槛；单候选不经过 summary。
 
-GLM/Qwen 支持三个入口；Kimi 支持 single/TTS。模型支持情况取决于你的服务商账号，不会用另一模型自动替代。
+GLM/Qwen 支持三个入口；Kimi 支持 single/TTS。DeepSeek V4.1 Flash 的 P0 配置与运行方法见本文末尾。模型支持情况取决于你的服务商账号，不会用另一模型自动替代。
 
 ## 输出
 
@@ -341,3 +342,102 @@ python -m pytest -q
 运行时保留有界的提交提取、binary diff、交互命令限制、持久化恢复状态和所有权校验。跨进程恢复不会重置已用预算；P0 停在首次有效提交，不执行后续监督/P1 阶段。镜像、依赖、网络条件及同模型定位由使用者提供，运行开始会固定镜像 digest；`pin_cpus` 和环境变量 `PHOENIX_CONTAINER_PROXY` 可用于本机环境配置。
 
 核心 agent 来自 SWE-agent 1.1.0 的项目内改版；保留原 MIT LICENSE。TTS 提示词与原始实验的 sample/summary/final 逻辑一致。完整策略定位和 P0 author guidance 从对应方法快照提取；不包含按任务 ID 分支的修复规则、参考补丁或评测答案。公开版本将服务器专用路径和控制器替换为可配置入口。
+
+## 用 DeepSeek V4.1 Flash 跑同样的 P0 实验（白话说明）
+
+这组实验把模型换成 **`deepseek-v4.1-flash`**，其余设置沿用**当前 GLM-5.2 的 200 次 API 调用、32K 输出版本**。定位、候选 patch、summary 和 final 都使用 Flash，不借用 GLM 的定位或补丁，也不切换模型。固定提示词、候选分配、错误恢复规则与当前 GLM 相同，没有按具体题目定制。
+
+模型名称与 thinking 开关参考[阿里云 DeepSeek 接口文档](https://help.aliyun.com/en/model-studio/deepseek-api)。这里使用未带日期后缀的 `deepseek-v4.1-flash`，不自动改成其他版本。下表是本实验主动设置的限制，不是服务商允许的最大值；也不表示已经取得 Flash 的实验分数。
+
+### 先定位，再生成 patch
+
+可以理解为：先让模型读题、读代码，提出完整修改方案；然后从原始代码开始，按方案生成补丁，并检查是否满足题目要求。
+
+- **只有一个定位候选**：生成一次 P0，不再做 summary 或额外 final。
+- **有多个定位候选**：每个候选各生成一个 patch，再做一次 summary，最后从原始代码重新生成最终 P0。
+- **P0 提交后结束**：不再调用独立 reviewer，不做审查后的修复，不启动官方评测。生成期间作者自己读代码、运行验证和修改，不等于额外监督阶段。
+
+### 轮次、200 次限制、输入大小和上下文
+
+| 项目 | 当前设置 | 白话解释 |
+| --- | --- | --- |
+| 定位最多多少轮 | **150 步** | 每题定位阶段最多进行 150 步交互，用来读源码和保存完整方案；这是步数上限，不承诺恰好 150 次 HTTP 请求 |
+| 生成最多多少轮 | **每个 author 阶段最多 200 步** | 候选生成和 final 各自还有轨迹步数限制；达到分配的 API 调用上限时，也会提前受限 |
+| 整个生成阶段 API 调用上限 | **每题合计 200 次** | 所有候选 + summary + final 共用，不是每个候选各有 200 次；失败请求和重试也占次数 |
+| 定位是否占这 200 次 | **不占** | 定位独立计预算，但其 tokens 仍计入方法总成本；定位剩下的步数不转给生成 |
+| Patch author 最长输入上下文 | **131,072 tokens** | 本地检查单次请求的消息输入长度，包含题目、提示词、历史对话和已读工具结果；不是整道题累计输入量 |
+| Patch author 压缩规则 | **超过 120,000，尝试压到 110,000** | 抽取中间较长工具输出的片段，保留首尾各 5 个工具交互轮次；目标不保证一定达到，超过输入上限仍报错 |
+| 定位输入上下文控制 | **超过 100,000，尝试压到 90,000；随后检查不超过 110,000** | 与 GLM 的定位配置一致；定位使用自己的压缩阈值，不套用 patch 的阈值 |
+| 每次最长输出 | **32,768 tokens** | 定位、author 和 P0 summary 的单次响应上限；不是每题全部响应加起来只有 32K |
+| 多候选 summary | **最多 1 次 API 请求** | 占用上述 200 次；读取候选补丁后给出指导，不做官方评分 |
+| 默认并发 | **4 道题** | 同时推进最多 4 个不同任务；同一道题的候选、summary、final 按顺序执行 |
+
+“步数”和“API 调用次数”不是同一回事。例如一个生成步骤前两次请求超时、第三次成功，就已经消耗 3 次 API 调用，但不一定增加 3 个轨迹步骤。因此不能把“定位 150 步 + 生成 200 次”说成严格最多 350 次 API 请求。
+
+输入上限和输出上限也是两回事。131,072 限制发给 author 的单次输入，32,768 限制单次输出，不能简单相加后宣称服务端一定支持二者同时取满。P0 summary 是独立请求路径，不自动运行 author 的本地输入检查与上下文压缩；较大的候选补丁可能触发服务端限制。压缩是程序抽取，不额外调用模型，完整轨迹仍保留。
+
+生成阶段的 200 次 API 调用具体这样分：
+
+| 定位候选数 | 分配方式 |
+| --- | --- |
+| 1 | author 最多 200 次 API 调用，直接生成 P0 |
+| 2 | 候选各最多 50 次，summary 最多 1 次，final 使用剩余次数，正常进入 final 时至少可用 99 次 |
+| 3 | 候选最多 34 / 33 / 33 次，summary 最多 1 次，final 使用剩余次数，正常进入 final 时至少可用 99 次 |
+
+候选提前结束，省下的 API 调用次数全部转给 final。例如两个候选实际用了 30 和 40 次，summary 用了 1 次，final 就最多还能用 **129 次**。每个阶段允许提前完成，不要求把次数用光。恢复运行不会重新发放预算。
+
+### 其余参数也跟当前 GLM 一致
+
+| 参数 | 设置 |
+| --- | --- |
+| API | DashScope OpenAI-compatible Chat Completions；使用与账号匹配的 API 地址 |
+| Thinking | 定位、author、P0 summary 都关闭，`enable_thinking=false` |
+| temperature / top_p | `0 / 1.0` |
+| author 工具选择 | `required`；模型需通过工具推进任务 |
+| 定位工具选择 | `auto`；与 GLM 定位配置一致 |
+| 单次 author API 超时 | 240 秒 |
+| 单次定位 API 超时 | 600 秒 |
+| 每个 author 阶段累计时限 | 7,200 秒，也就是 2 小时；恢复不重置，多个阶段各自计时 |
+| 定位总时限 | 默认不另设墙钟上限，使用 150 步限制；可用 `--localization-timeout` 另设 |
+| author API 重试 | 同一 query 最多 8 次尝试，包含首次；失败与重试都计入 API 调用预算 |
+| 重试等待 / SDK 重试 | 10–120 秒随机指数退避；SDK `num_retries=0` |
+| P0 summary 超时 | 连接 30 秒 / 读取 240 秒；最多 1 次请求，不套用 author 的 8 次尝试 |
+| 容器资源 | 每个容器 2 CPU、6 GiB 内存；环境启动并发 2，本地命令并发 4 |
+
+### 运行脚本：定位和 patch 一起跑
+
+先按前面的安装说明准备 Python 环境、Docker 镜像和 runtime。把下面两处示例路径替换成自己的任务清单和 runtime 路径；密钥放在本机 `.env` 的 `PHOENIX_API_KEY`，或通过环境变量提供，不写进脚本。
+
+```bash
+cd /path/to/PhoenixRepair-core
+
+# 从头运行：Flash 定位 → Flash 生成 patch → P0。
+bash run_v41_flash_our_method.sh \
+  --instances /path/to/instances.json \
+  --runtime /path/to/runtime \
+  --stage all \
+  --concurrency 4 \
+  --localization-max-steps 150 \
+  --max-steps 200 \
+  --task-timeout 7200 \
+  --output runs/deepseek-v4.1-flash-p0-200calls-32k
+```
+
+入口使用 [Flash 配置](configs/models/deepseek-v4.1-flash/our_method.yaml)。也可以用通用入口，效果相同：
+
+```bash
+bash our_method.sh \
+  --config configs/models/deepseek-v4.1-flash/our_method.yaml \
+  --instances /path/to/instances.json \
+  --runtime /path/to/runtime \
+  --stage all \
+  --output runs/deepseek-v4.1-flash-p0-200calls-32k
+```
+
+如果你的 key 使用工作空间专属地址，在命令中增加 `--api-base https://你的接口地址/compatible-mode/v1`，或在 `.env` 设置 `API_BASE`。默认沿用当前 GLM 的 DashScope 地址。模型和 key 是否在该地址可用，要以实际账号为准；脚本不会自动换模型、打开 thinking 或放宽参数来绕过接口错误。
+
+首次运行可以先给同一条命令追加 `--dry-run`：只检查输入清单和参数，不调用模型 API、不启动 Docker，也不证明鉴权、镜像或模型接口已经可用。中断后使用原命令和原输出目录加 `--resume`；重新做一轮独立实验则换新输出目录。只要不传 `--locations`，新运行就会先生成 Flash 自己的定位。
+
+最终定位保存在输出目录的 `localization/`，最终补丁保存在 `deepseek-v4.1-flash/<instance_id>/P0.patch`，同目录也保留 `final.patch`。运行记录可以核查实际 API 调用、tokens 和失败原因。此配置只改变模型身份，不能保证 Flash 的通过率与 GLM 相同。
+
+本次已离线验证配置、完整流程入口、summary 请求参数及恢复计数，相关测试 67 项通过；未启动真实 Flash 实验，也未实测当前账号的 Flash 鉴权和限流情况。

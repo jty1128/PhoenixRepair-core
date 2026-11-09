@@ -78,7 +78,9 @@ def test_full_budget_includes_summary_and_transfers_savings(tmp_path, task, cand
     assert report["review_calls"] == report["repair_calls"] == 0
 
 
-def test_current_p0_summary_uses_same_output_and_budget_guidance(tmp_path, monkeypatch, task, settings):
+@pytest.mark.parametrize("model", ["glm-5.2", "deepseek-v4.1-flash"])
+def test_current_p0_summary_uses_same_output_and_budget_guidance(tmp_path, monkeypatch, task, settings, model):
+    settings["model"] = model
     requests = []
 
     class Session:
@@ -100,6 +102,9 @@ def test_current_p0_summary_uses_same_output_and_budget_guidance(tmp_path, monke
         settings, tmp_path / "summary", "synthetic-key", shared_budget=True)
     assert len(requests) == 1
     payload = requests[0]["json"]
+    assert payload["model"] == model
+    assert payload["enable_thinking"] is False
+    assert requests[0]["timeout"] == (30, 240)
     assert payload["max_tokens"] == 32768 and payload["temperature"] == 0
     assert "remaining shared generation budget" in payload["messages"][0]["content"]
     assert "Independent review follows" not in payload["messages"][0]["content"]

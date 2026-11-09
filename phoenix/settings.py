@@ -20,6 +20,8 @@ PROFILES = {
     "qwen3.7-plus": dict(max_tokens=32768, timeout=600, tool_choice="auto", thinking=False, task_timeout=7200),
     "kimi-k2.7-code": dict(max_tokens=32768, timeout=240, tool_choice="auto", thinking=True, task_timeout=3000),
 }
+# New-model comparison: inherit the current GLM settings, not model defaults.
+PROFILES["deepseek-v4.1-flash"] = dict(PROFILES["glm-5.2"])
 
 
 def write_json(path: Path, value):
@@ -99,8 +101,8 @@ def load_settings(mode, config_path, overrides):
     data.setdefault("model", "glm-5.2")
     if data["model"] not in PROFILES:
         raise ValueError("Unknown model profile: " + data["model"])
-    if mode == "our_method" and data["model"] not in ("glm-5.2", "qwen3.7-plus"):
-        raise ValueError("The published P0 method has GLM and Qwen profiles; Kimi is available for single/TTS")
+    if mode == "our_method" and data["model"] not in ("glm-5.2", "qwen3.7-plus", "deepseek-v4.1-flash"):
+        raise ValueError("P0 supports GLM, Qwen and DeepSeek V4.1 Flash; Kimi is available for single/TTS")
     for key, env in [("instances", "INSTANCES"), ("runtime", "PHOENIX_RUNTIME"), ("docker_host", "DOCKER_HOST"), ("api_base", "API_BASE")]:
         if not data.get(key) and os.environ.get(env):
             data[key] = os.environ[env]

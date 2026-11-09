@@ -23,6 +23,7 @@ MODEL_RECOVERY = {
         "p0_supported": False,
     },
 }
+MODEL_RECOVERY["deepseek-v4.1-flash"] = dict(MODEL_RECOVERY["glm-5.2"])
 
 
 def recovery_profile(settings):
@@ -34,10 +35,10 @@ def recovery_profile(settings):
     if settings["method"] == "our_method":
         if not result["p0_supported"]:
             raise ValueError("No historically scored Kimi P0 profile is available")
-        result.update(summary_timeout_seconds=(30, 240 if model == "glm-5.2" else 600),
+        result.update(summary_timeout_seconds=(30, result["api_timeout_seconds"]),
                       summary_transport_attempts=1, summary_format_rounds=1,
                       summary_request_interval_seconds=2,
-                      author_budget="shared task budget; original 40-call review reservation remains unused")
+                      author_budget="shared task API-call budget; no calls reserved for post-P0 review")
     else:
         result["author_budget"] = "independent trajectory step cap; preserve already spent steps on recovery"
     return result

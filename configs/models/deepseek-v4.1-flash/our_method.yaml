@@ -1,0 +1,20 @@
+# Same settings as the current GLM 200-call/32K P0 experiment; only model/output differ.
+model: deepseek-v4.1-flash
+instances: null
+runtime: null
+api_base: null
+output: runs/deepseek-v4.1-flash-p0-200calls-32k
+concurrency: 4
+max_steps: 200
+max_input_tokens: 131072
+context_compaction_threshold: 120000
+context_compaction_target: 110000
+task_timeout: 7200
+localization_max_steps: 150
+localization_timeout: null
+stage: all
+locations: null
+container_cpus: 2
+container_memory: 6g
+environment_start_concurrency: 2
+local_command_concurrency: 4
