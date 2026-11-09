@@ -16,7 +16,7 @@ MODEL_RECOVERY = {
         "tts_capture_reserve_seconds": 60, "p0_supported": True,
     },
     "kimi-k2.7-code": {
-        "api_timeout_seconds": 240, "wall_time_seconds": 3000,
+        "api_timeout_seconds": 240, "wall_time_seconds": 7200,
         "thinking": True, "preserve_thinking": True,
         "summary_timeout_seconds": 240, "summary_transport_attempts": 3,
         "summary_format_rounds": 3, "tts_capture_reserve_seconds": 0,
@@ -39,6 +39,9 @@ def recovery_profile(settings):
                       summary_transport_attempts=1, summary_format_rounds=1,
                       summary_request_interval_seconds=2,
                       author_budget="shared task API-call budget; no calls reserved for post-P0 review")
+        result["p0_reserved_calls"] = settings.get("p0_reserved_calls", 0)
+        if result["p0_reserved_calls"]:
+            result["author_budget"] = "shared task API-call budget minus reserved calls; stop at first P0 submission"
     else:
         result["author_budget"] = "independent trajectory step cap; preserve already spent steps on recovery"
     return result

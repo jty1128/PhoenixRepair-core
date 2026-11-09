@@ -58,7 +58,7 @@ author 使用模型读取源码、提出操作、修复代码并提交。多候�
 
 输出可以包括普通文本和工具调用参数，例如编辑命令中的代码。模型可以提前结束；如果达到输出上限，响应可能不完整，需要查看实际结束原因与后续处理。
 
-当前 author 和 P0 summary 都读取 `phoenix/settings.py` 中 GLM 的同一个 `max_tokens=32768`。修改这个值会同时影响这两条 P0 请求路径。
+当前 GLM P0 的 author 和 summary 输出上限均默认为 32,768，分别读取 `max_tokens` 和 `summary_max_tokens`。两者可独立配置；修改 author 的上限不会自动修改 summary。
 
 例如，某题发出 60 次 API 请求，每次实际输出长度都可以不同。因此：
 
@@ -195,10 +195,10 @@ author 对同一个 query 最多尝试 **8 次，包含首次，即最多再试 
 
 ## 14. 配置入口与实现依据
 
-当前接口没有单独提供 `p0_call_budget` 或 `max_output_tokens` 配置字段：
+`bash our_method.sh --model glm5.2` 自动选择 `configs/models/glm-5.2/our_method.yaml`，无需手动指定 `--config`。`--dry-run` 展示最终生效的配置与请求参数。
 
 - P0 共享 API 调用上限通过 `max_steps` 确定，同时影响 author 步数设置。
-- 单次输出上限读取 `phoenix/settings.py` 的模型 profile。
+- author 输出上限使用 `max_tokens`，可用 `--max-tokens` 覆盖；summary 使用独立的 `summary_max_tokens`，可用 `--summary-max-tokens` 覆盖。
 - 输入检查和压缩参数可通过对应配置项设置。
 - `--locations` 选择已有定位，不改变生成阶段的 API 调用计数规则。
 

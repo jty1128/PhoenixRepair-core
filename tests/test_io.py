@@ -8,7 +8,7 @@ import pytest
 import requests
 
 from phoenix import summary
-from phoenix.settings import ROOT, localization_config, write_json
+from phoenix.settings import ROOT, localization_config, load_settings, write_json
 from phoenix.submission_probe import normalize_test_submission
 
 
@@ -53,7 +53,7 @@ def test_branch_default_matches_configuration(tmp_path, task, mode):
 ])
 def test_summary_profile_format_and_shared_budget(monkeypatch, tmp_path, task, settings, bad_response,
                                                  mode, model, temperature, output_limit, timeout):
-    settings.update(method=mode, model=model)
+    settings.update(load_settings(mode, overrides={"model": model, "output": settings["output"], "runtime": settings["runtime"]}))
     calls = []
     answer = ("**BEST_SAMPLE:** 1\n**REASONING:** The constant matches the requested behavior and preserves callers.\n"
               "**INSIGHTS FOR NEXT ATTEMPT:** Update the value and verify the affected edge cases.")

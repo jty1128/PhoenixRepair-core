@@ -1,9 +1,16 @@
-# One independent sample per task. Change output for sample-2/sample-3.
+# Model/method defaults selected automatically by the unified entry points.
 model: glm-5.2
-instances: null  # Set a manifest path here, with --instances, or INSTANCES in .env.
-runtime: null    # Set a runtime path here, with --runtime, or PHOENIX_RUNTIME.
+instances: null
+runtime: null
 output: runs/glm-5.2-single
 concurrency: 4
 max_steps: 200
-task_timeout: null  # Profile default: GLM/Qwen 7200 seconds; Kimi 3000.
-api_base: null      # API_BASE in .env, otherwise DashScope OpenAI-compatible.
+task_timeout: 7200
+api_base: null
+max_tokens: 16384
+summary_max_tokens: 8192
+max_input_tokens: 1048576
+context_compaction_threshold: 1030000
+context_compaction_target: 1000000
+p0_reserved_calls: 0
+api_retries: 20

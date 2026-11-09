@@ -1,3 +1,4 @@
+from phoenix.settings import load_settings
 from pathlib import Path
 
 import pytest
@@ -25,7 +26,7 @@ def test_historical_tts_summary_rejects_incomplete_outputs(answer):
 
 @pytest.mark.parametrize("model", ["glm-5.2", "qwen3.7-plus"])
 def test_tts_runs_three_independent_samples_then_summary_and_fresh_final(monkeypatch, tmp_path, task, settings, model):
-    settings.update(method="tts", model=model)
+    settings.update(load_settings("tts", overrides={"model": model, "output": settings["output"], "runtime": settings["runtime"]}))
     generated, requests = [], []
     answer = "BEST_SAMPLE: [2]\nREASONING:\n" + ("Candidate two covers the requested behavior and its callers. " * 3)
     answer += "\nINSIGHTS FOR NEXT ATTEMPT:\nUse the correct behavior and check edge cases."

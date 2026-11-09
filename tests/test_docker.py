@@ -8,7 +8,7 @@ import uuid
 
 import pytest
 
-from phoenix.settings import write_json, localization_config
+from phoenix.settings import write_json, localization_config, load_settings
 from phoenix import worker, localization
 from phoenix.pipeline import load_location
 
@@ -38,7 +38,7 @@ def test_real_container_edit_and_p0_submission(tmp_path, monkeypatch, task, cand
         commit = docker("run", "--rm", "--network=none", "--entrypoint=git", image,
                         "-C", "/fixture", "rev-parse", "HEAD").stdout.strip()
         task.update(base_commit=commit, image_name=image)
-        settings.update(runtime=runtime, method="our_method", model=model)
+        settings.update(load_settings("our_method", overrides={"model": model, "runtime": runtime, "output": settings["output"]}))
         source = localization.export_source(tmp_path / "source-cache", task)
         candidate["hypothesis_id"] = "H1"
         location_actions = iter([
@@ -85,7 +85,7 @@ def test_real_container_edit_and_p0_submission(tmp_path, monkeypatch, task, cand
         worker.execute(dict(task=task, settings=settings, stage_dir=str(stage),
             base_agent=worker.prepare_tools(tmp_path)["agent"], port=port,
             run_id=run_id, job_id="one", candidate=candidate,
-            generation_allowance=160, final_stage=True))
+            generation_allowance=200-settings["p0_reserved_calls"], final_stage=True))
         patch = (stage / "P0.patch").read_text()
         assert "+value = 2" in patch and "-value = 1" in patch
         p0 = json.loads((stage / "P0.json").read_text())

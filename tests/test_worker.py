@@ -4,7 +4,7 @@ from jinja2 import Template
 import pytest
 
 from phoenix.worker import build_config, install_p0_budget, prepare_tools
-from phoenix.settings import PROFILES
+from phoenix.settings import PROFILES, method_profile, load_settings
 
 
 @pytest.mark.parametrize("model", list(PROFILES))
@@ -13,14 +13,14 @@ def test_config_profiles_no_secret_and_literal_guidance(tmp_path, task, candidat
     if mode == "our_method" and model == "kimi-k2.7-code":
         pytest.skip("P0 only has GLM/Qwen profiles")
     from sweagent.run.run_single import RunSingleConfig
-    settings.update(method=mode, model=model)
+    settings.update(load_settings(mode, overrides={"model": model, "output": settings["output"], "runtime": settings["runtime"]}))
     request = dict(task=task, settings=settings, stage_dir=str(tmp_path / "stage"),
         base_agent=prepare_tools(tmp_path)["agent"], port=54321, run_id="fixture", job_id="one",
         num_candidates=3, summary="Literal source: {{ unbound }} and {% invalid %}")
     data, guidance = build_config(request)
     config = RunSingleConfig.model_validate(data)
     completion = config.agent.model.completion_kwargs
-    assert completion["max_tokens"] == PROFILES[model]["max_tokens"]
+    assert completion["max_tokens"] == method_profile(model, mode)["max_tokens"]
     assert completion["timeout"] == PROFILES[model]["timeout"]
     assert completion["tool_choice"] == PROFILES[model]["tool_choice"]
     assert config.agent.model.api_key.get_secret_value() == "$PHOENIX_API_KEY"
@@ -78,7 +78,7 @@ def test_context_override_reaches_worker_without_changing_generation(tmp_path, t
 
 @pytest.mark.parametrize("overrides", [
     {"max_input_tokens": 120000},
-    {"context_compaction_target": 120001},
+    {"context_compaction_target": 1030001},
     {"max_input_tokens": True},
 ])
 def test_invalid_context_limits_rejected_before_launch(tmp_path, overrides):

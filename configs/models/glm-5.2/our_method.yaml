@@ -1,5 +1,4 @@
-# Current GLM P0: complete localization -> 200 shared generation calls, 32K output.
-# No patch review, repair, P1 selection, or benchmark evaluation is run.
+# Model/method defaults selected automatically by the unified entry points.
 model: glm-5.2
 instances: null
 runtime: null
@@ -14,4 +13,8 @@ localization_timeout: null
 task_timeout: 7200
 api_base: null
 stage: all
-locations: null  # Optional frozen same-model location directory.
+locations: null
+max_tokens: 32768
+summary_max_tokens: 32768
+p0_reserved_calls: 0
+api_retries: 8

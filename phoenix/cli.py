@@ -11,14 +11,14 @@ import subprocess
 import sys
 import signal
 
-from phoenix.settings import ROOT, PROFILES, fingerprint, load_instances, load_settings, write_json
+from phoenix.settings import normalize_model, method_profile, model_config, summary_profile, fingerprint, load_instances, load_settings, write_json
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("method", choices=("single", "tts", "our_method"))
     parser.add_argument("--config", type=Path)
-    parser.add_argument("--model", choices=tuple(PROFILES))
+    parser.add_argument("--model", type=normalize_model, help="Model ID or alias: glm5.2, qwen, kimi")
     parser.add_argument("--instances", type=Path, help="JSON array or JSONL task manifest")
     parser.add_argument("--output", type=Path, help="Run directory; use --resume to continue the same run")
     parser.add_argument("--resume", action="store_true", help="Adopt this run's workers and reuse verified stages without resetting budgets")
@@ -27,7 +27,9 @@ def main(argv=None):
     parser.add_argument("--concurrency", type=int)
     parser.add_argument("--samples", type=int, help="Independent TTS samples, default 3")
     parser.add_argument("--max-steps", type=int)
-    parser.add_argument("--max-input-tokens", type=int, help="Generation context limit; historical default 131072")
+    parser.add_argument("--max-tokens", type=int, help="Maximum output tokens per author response")
+    parser.add_argument("--summary-max-tokens", type=int, help="Maximum output tokens per summary response")
+    parser.add_argument("--max-input-tokens", type=int, help="Override the selected model/method input context limit")
     parser.add_argument("--context-compaction-threshold", type=int, help="Generation input threshold; 0 disables compaction")
     parser.add_argument("--context-compaction-target", type=int, help="Target input size after generation context compaction")
     parser.add_argument("--task-timeout", type=int)
@@ -44,9 +46,9 @@ def main(argv=None):
                         help="Validate configuration and task inputs; no model or Docker calls")
     args = parser.parse_args(argv)
     try:
-        settings = load_settings(args.method, args.config or ROOT / "configs" / (args.method + ".yaml"), {
+        settings = load_settings(args.method, args.config, {
             k: getattr(args, k) for k in ("model", "instances", "output", "runtime", "api_base", "concurrency", "samples",
-                                         "max_steps", "task_timeout", "localization_max_steps", "localization_timeout",
+                                         "max_steps", "max_tokens", "summary_max_tokens", "task_timeout", "localization_max_steps", "localization_timeout",
                                          "docker_host", "locations", "stage", "adaptive_io", "io_device",
                                          "max_input_tokens", "context_compaction_threshold", "context_compaction_target")})
         settings["resume"] = args.resume
@@ -66,7 +68,13 @@ def main(argv=None):
             for task in instances:
                 load_location(settings["locations"], task, settings["model"])
         plan = dict(recovery_format=1, settings=settings, tasks=len(instances), instance_ids=[x["instance_id"] for x in instances],
-                    task_manifest_sha256=fingerprint(instances), model_profile=PROFILES[settings["model"]],
+                    task_manifest_sha256=fingerprint(instances),
+                    model_profile={**method_profile(settings["model"], args.method),
+                                   **{k: settings[k] for k in ("max_tokens", "summary_max_tokens", "p0_reserved_calls", "api_retries",
+                                                             "task_timeout", "max_input_tokens", "context_compaction_threshold", "context_compaction_target")}},
+                    author_model_config=model_config(settings["model"], settings["api_base"],
+                                                     p0=args.method == "our_method", context_settings=settings),
+                    summary_profile=summary_profile(settings) if args.method != "single" else None,
                     review_calls_enabled=False, repair_stage_enabled=False,
                     method_output="P0" if args.method == "our_method" else "final.patch",
                     old_patch_seed=False, evaluation_feedback_input=False)
@@ -100,7 +108,7 @@ def main(argv=None):
                 immutable = ("model", "method", "api_base", "max_steps", "task_timeout", "samples",
                              "localization_max_steps", "localization_timeout", "locations", "stage",
                              "runtime", "docker_host", "container_cpus", "container_memory", "pin_cpus",
-                             "max_input_tokens", "context_compaction_threshold", "context_compaction_target")
+                             "max_tokens", "summary_max_tokens", "p0_reserved_calls", "api_retries", "max_input_tokens", "context_compaction_threshold", "context_compaction_target")
                 if (previous.get("task_manifest_sha256") != plan["task_manifest_sha256"] or
                     any(previous["settings"].get(k) != settings.get(k) for k in immutable)):
                     raise ValueError("Resume must preserve task inputs, model, method, locations and original budgets")

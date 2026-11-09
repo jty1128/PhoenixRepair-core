@@ -8,8 +8,8 @@ import os
 import requests
 
 from phoenix.prompts import PromptBuilder
-from phoenix.p0_guidance import SUMMARY_GUIDANCE
-from phoenix.settings import PROFILES, write_json
+from phoenix.p0_guidance import summary_guidance
+from phoenix.settings import summary_profile, write_json
 from phoenix.run_state import bind, read, digest
 
 def sha(path):
@@ -75,17 +75,16 @@ def summarize(task, candidates, settings, directory, key, *, shared_budget=False
                            exit_status="submitted" if p0 else row["exit_status"], patch_sha256=sha(patch), preview=metadata))
     prompt = PromptBuilder()._build_comparison_prompt(task["problem_statement"], inputs, len(inputs))
     if p0:
-        prompt += SUMMARY_GUIDANCE
+        prompt += summary_guidance(settings)
     (directory / "prompt.txt").write_text(prompt)
     write_json(directory / "inputs.json", [{k: v for k, v in row.items() if k != "submission"} for row in inputs])
     kimi = settings["model"] == "kimi-k2.7-code"
-    payload = dict(model=settings["model"], messages=[{"role": "user", "content": prompt}], temperature=0.7,
-                   top_p=1.0, max_tokens=32768 if kimi else 8192, enable_thinking=kimi)
+    profile = summary_profile(settings)
+    payload = dict(model=settings["model"], messages=[{"role": "user", "content": prompt}], temperature=profile["temperature"],
+                   top_p=profile["top_p"], max_tokens=profile["max_tokens"], enable_thinking=profile["enable_thinking"])
     if kimi:
         payload["preserve_thinking"] = True
-    if p0:
-        payload.update(temperature=0.0, max_tokens=PROFILES[settings["model"]]["max_tokens"])
-    timeout = (30, PROFILES[settings["model"]]["timeout"]) if p0 else (240 if kimi else 120)
+    timeout = profile["timeout"]
     bind(directory / "identity.json", {"payload": payload, "api_base": settings["api_base"],
                                       "shared_budget": shared_budget})
     write_json(directory / "request.json", payload)
@@ -100,8 +99,8 @@ def summarize(task, candidates, settings, directory, key, *, shared_budget=False
         return (directory / "summary.txt").read_text()
     if state["phase"] == "failed":
         raise RuntimeError("Summary exhausted its original bounded attempts; no budget reset on resume")
-    transport_limit = 1 if shared_budget else (3 if kimi else 5)
-    format_limit = 1 if shared_budget else 3
+    transport_limit = profile["transport_attempts"]
+    format_limit = profile["format_rounds"]
     session = requests.Session()
     session.trust_env = False
     def persist():

@@ -15,7 +15,7 @@ import threading
 
 import yaml
 
-from phoenix.p0_guidance import IMPLEMENTATION_GUIDANCE
+from phoenix.p0_guidance import implementation_guidance
 from phoenix.prompts import PromptBuilder
 from phoenix.settings import ROOT, model_config, write_json
 from phoenix.run_state import read, digest, process_identity, lock
@@ -56,7 +56,7 @@ def build_config(request):
     data["model"] = model_config(settings["model"], settings["api_base"], p0=p0, context_settings=settings)
     data["tools"].update(git_execution_timeout=180, max_consecutive_execution_timeouts=0)
     if p0:
-        data["templates"]["instance_template"] += "\n" + IMPLEMENTATION_GUIDANCE
+        data["templates"]["instance_template"] += "\n" + implementation_guidance(settings)
         data["tools"]["total_execution_timeout"] = settings["task_timeout"]
     agent = DefaultAgentConfig.model_validate(data)
     helper = PromptBuilder()
@@ -112,7 +112,7 @@ def build_config(request):
     return config, guidance
 
 
-def install_p0_budget(agent, allowance, final_stage, stage=None, initial_calls=0):
+def install_p0_budget(agent, allowance, final_stage, stage=None, initial_calls=0, reserved_calls=0):
     """Retain the historical author allowance and reminders, then stop at P0."""
     from sweagent.agent.hooks.abstract import AbstractAgentHook
     from sweagent.exceptions import InstanceCallLimitExceededError
@@ -183,10 +183,15 @@ def install_p0_budget(agent, allowance, final_stage, stage=None, initial_calls=0
         def on_model_query(self, *, messages, agent):
             remaining = allowance - self.calls
             if self.calls == 0 or remaining in (20, 10, 5, 2, 1):
+                if reserved_calls:
+                    reminder = ("Review and one focused repair have separate reserved calls within the task total. " if final_stage else
+                                "This is an intermediate candidate; independent review is reserved for the final patch after summary. ")
+                else:
+                    reminder = ("This is the final P0 stage; all stated calls are available for generation and checks. " if final_stage else
+                                "This is an intermediate candidate; summary and final generation follow within the shared 200-call budget. ")
                 messages.append({"role": "user", "agent": agent, "content":
                     f"This stage allows {allowance} initial generation calls; {remaining} remain. "
-                    + ("This is the final P0 stage; all stated calls are available for generation and checks. " if final_stage else
-                       "This is an intermediate candidate; summary and final generation follow within the shared 200-call budget. ")
+                    + reminder
                     + "Complete the issue, run focused checks, remove temporary files and submit before this allowance ends."})
     hook = AuthorBudget()
     agent.add_hook(hook)
@@ -359,7 +364,7 @@ def execute(request):
     hook = None
     if request["settings"]["method"] == "our_method":
         hook = install_p0_budget(runner.agent, request["generation_allowance"], request["final_stage"],
-                                 stage, request.get("prior_calls", 0))
+                                 stage, request.get("prior_calls", 0), request["settings"].get("p0_reserved_calls", 0))
         hook.persist()
     install_durability(runner.agent, request, hook)
     failed = False

@@ -33,3 +33,17 @@ related one. Check interacting changes together before submitting the P0 patch.
 Tests must execute actual repository code and report real status; log formatting
 must not mask a failed or unrun check. Unknown validation remains explicitly unknown.
 """
+
+
+def implementation_guidance(settings):
+    if settings["model"] == "qwen3.7-plus":
+        from phoenix.qwen_p0_guidance import IMPLEMENTATION_GUIDANCE as guidance
+        return guidance
+    return IMPLEMENTATION_GUIDANCE
+
+
+def summary_guidance(settings):
+    if settings["model"] == "qwen3.7-plus":
+        from phoenix.qwen_p0_guidance import SUMMARY_GUIDANCE as guidance
+        return guidance
+    return SUMMARY_GUIDANCE
