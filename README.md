@@ -102,6 +102,8 @@ final 可用 API 调用次数 = 200 - 所有候选已计入预算的 API 调用�
 
 ### 模型与运行参数
 
+逐项含义、API 调用与步数的区别、超时和重试规则，以及 author / summary / 定位的适用范围，见 [GLM-5.2 P0 模型与运行参数详解](docs/glm-p0-parameters.md)。
+
 | 参数 | GLM-5.2 P0 |
 | --- | --- |
 | API 模型 / 协议 | `glm-5.2` / DashScope OpenAI-compatible Chat Completions |
